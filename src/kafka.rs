@@ -65,14 +65,8 @@ impl KafkaProducer {
             .set("retries", "2147483647") // Infinite retries with idempotence
             .set("retry.backoff.ms", "100")
             // Batching
-            .set(
-                "batch.size",
-                config.producer.batch_size.to_string(),
-            )
-            .set(
-                "linger.ms",
-                config.producer.linger.as_millis().to_string(),
-            )
+            .set("batch.size", config.producer.batch_size.to_string())
+            .set("linger.ms", config.producer.linger.as_millis().to_string())
             // Compression
             .set("compression.type", &config.producer.compression)
             // Timeouts
@@ -80,10 +74,7 @@ impl KafkaProducer {
                 "message.timeout.ms",
                 config.producer.message_timeout.as_millis().to_string(),
             )
-            .set(
-                "request.timeout.ms",
-                "30000",
-            )
+            .set("request.timeout.ms", "30000")
             // Message size
             .set(
                 "message.max.bytes",
@@ -164,7 +155,11 @@ impl KafkaProducer {
 
         let record = FutureRecord::to(topic).key(key).payload(&payload);
 
-        match self.producer.send(record, Timeout::After(Duration::from_secs(5))).await {
+        match self
+            .producer
+            .send(record, Timeout::After(Duration::from_secs(5)))
+            .await
+        {
             Ok((partition, offset)) => {
                 debug!(
                     "Message delivered to partition {} at offset {}",
@@ -210,8 +205,12 @@ impl KafkaProducer {
         let mut futures = Vec::with_capacity(payloads.len());
 
         for (key, payload) in &payloads {
-            let record = FutureRecord::to(topic).key(key.as_str()).payload(payload.as_str());
-            let future = self.producer.send(record, Timeout::After(Duration::from_secs(5)));
+            let record = FutureRecord::to(topic)
+                .key(key.as_str())
+                .payload(payload.as_str());
+            let future = self
+                .producer
+                .send(record, Timeout::After(Duration::from_secs(5)));
             futures.push(future);
         }
 

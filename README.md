@@ -55,7 +55,7 @@ Create a `.env` file:
 # Blockchain
 RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
 CHAIN_ID=11155111
-START_BLOCK=9570110
+START_BLOCK=9884750
 POLL_INTERVAL_MS=2000
 
 # Kafka
@@ -76,4 +76,9 @@ THERA_FLIX_ADDRESS=0xf661ddE72f3dcC7b16b1Df8D7d8864619049fD75
 ```bash
 docker build -t theragraph-rust .
 docker run --env-file .env theragraph-rust
+
+## Integration notes
+
+- See `docs/graph-ingest.md` for guidance on partitioning, batching and idempotent ingestion to the graph DB.
+- Example consumer skeleton: `examples/consumer_skeleton.rs` demonstrates grouping by partition and producing batched mutations.
 ```

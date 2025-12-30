@@ -31,9 +31,13 @@ pub async fn run_with_state(state: Arc<AppState>) -> Result<()> {
     let provider = Provider::<Http>::try_from(state.config.blockchain.rpc_url.as_str())
         .map_err(|e| Error::blockchain(format!("Failed to create provider: {}", e)))?;
 
-    let start_block = get_last_indexed_block(state.db.pool(), &format!("{:?}", contract_address))
-        .await?
-        .unwrap_or(state.config.blockchain.start_block);
+    let start_block = get_last_indexed_block(
+        state.db.pool(),
+        &format!("{:?}", contract_address),
+        "friend",
+    )
+    .await?
+    .unwrap_or(state.config.blockchain.start_block);
 
     let mut indexer = FriendIndexer {
         provider: Arc::new(provider),
@@ -175,9 +179,10 @@ pub async fn run(config: Config, kafka_producer: KafkaProducer, db_pool: PgPool)
 
     let contract_address = parse_address(&config.contracts.thera_friends)?;
 
-    let mut current_block = get_last_indexed_block(&db_pool, &format!("{:?}", contract_address))
-        .await?
-        .unwrap_or(config.blockchain.start_block);
+    let mut current_block =
+        get_last_indexed_block(&db_pool, &format!("{:?}", contract_address), "friend")
+            .await?
+            .unwrap_or(config.blockchain.start_block);
 
     info!("📍 Starting from block: {}", current_block);
 
@@ -263,7 +268,13 @@ async fn process_blocks(
     }
 
     *current_block = to_block;
-    save_last_indexed_block(db_pool, &format!("{:?}", contract_address), "friend", to_block).await?;
+    save_last_indexed_block(
+        db_pool,
+        &format!("{:?}", contract_address),
+        "friend",
+        to_block,
+    )
+    .await?;
 
     Ok(())
 }

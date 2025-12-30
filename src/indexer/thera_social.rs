@@ -28,9 +28,13 @@ pub async fn run_with_state(state: Arc<AppState>) -> Result<()> {
     let provider = Provider::<Http>::try_from(state.config.blockchain.rpc_url.as_str())
         .map_err(|e| Error::blockchain(format!("Failed to create provider: {}", e)))?;
 
-    let start_block = get_last_indexed_block(state.db.pool(), &format!("{:?}", contract_address))
-        .await?
-        .unwrap_or(state.config.blockchain.start_block);
+    let start_block = get_last_indexed_block(
+        state.db.pool(),
+        &format!("{:?}", contract_address),
+        "friends",
+    )
+    .await?
+    .unwrap_or(state.config.blockchain.start_block);
 
     let mut indexer = TheraSocialIndexer {
         provider: Arc::new(provider),
@@ -49,7 +53,10 @@ pub async fn run_with_state(state: Arc<AppState>) -> Result<()> {
 impl TheraSocialIndexer {
     #[instrument(skip(self, shutdown_rx), fields(contract = %self.contract_address))]
     async fn run(&mut self, shutdown_rx: &mut broadcast::Receiver<()>) -> Result<()> {
-        info!("🧩 TheraSocialIndexer started for contract: {:?}", self.contract_address);
+        info!(
+            "🧩 TheraSocialIndexer started for contract: {:?}",
+            self.contract_address
+        );
         info!("📍 Starting from block: {}", self.current_block);
 
         loop {
@@ -113,7 +120,12 @@ impl TheraSocialIndexer {
         .await?;
 
         if !logs.is_empty() {
-            info!("🔍 Found {} logs in blocks {}-{}", logs.len(), self.current_block, to_block);
+            info!(
+                "🔍 Found {} logs in blocks {}-{}",
+                logs.len(),
+                self.current_block,
+                to_block
+            );
         }
 
         for log in logs {
@@ -137,7 +149,11 @@ impl TheraSocialIndexer {
     async fn process_log(&self, log: &Log) -> Result<()> {
         let parsed = crate::events::parse_log(log, "friends")?;
         let kafka_key = crate::events::event_kafka_key(&parsed);
-        let topic = if parsed.event_type == "Unknown" { "blockchain.events" } else { "user.actions" };
+        let topic = if parsed.event_type == "Unknown" {
+            "blockchain.events"
+        } else {
+            "user.actions"
+        };
 
         self.kafka.send_event(topic, &kafka_key, &parsed).await
     }

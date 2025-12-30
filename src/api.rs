@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{info, error};
+use tracing::{error, info};
 
 use crate::recommendation::{
     engine::RecommendationEngine,
@@ -48,7 +48,9 @@ pub struct RecommendationsQuery {
     pub exclude_seen: bool,
 }
 
-fn default_limit() -> usize { 20 }
+fn default_limit() -> usize {
+    20
+}
 
 /// Response for feed endpoints
 #[derive(Debug, Serialize)]
@@ -81,39 +83,44 @@ pub struct HealthResponse {
 /// Start the API server
 pub async fn start_server(pool: PgPool, port: u16) -> Result<()> {
     let engine = RecommendationEngine::new(pool.clone());
-    
+
     let state = Arc::new(AppState { pool, engine });
-    
+
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
-    
+
     let app = Router::new()
         // Health check
         .route("/health", get(health_check))
-        
         // Feed endpoints
         .route("/api/v1/feed/:user_address", get(get_following_feed))
-        .route("/api/v1/enhanced-feed/:user_address", get(get_enhanced_feed))
-        .route("/api/v1/recommendations/:user_address", get(get_recommendations))
+        .route(
+            "/api/v1/enhanced-feed/:user_address",
+            get(get_enhanced_feed),
+        )
+        .route(
+            "/api/v1/recommendations/:user_address",
+            get(get_recommendations),
+        )
         .route("/api/v1/trending", get(get_trending))
-        
         // Interaction tracking
         .route("/api/v1/interactions", post(record_user_interaction))
-        
         // User preferences
-        .route("/api/v1/preferences/:user_address", get(get_user_preferences))
-        
+        .route(
+            "/api/v1/preferences/:user_address",
+            get(get_user_preferences),
+        )
         .layer(cors)
         .with_state(state);
-    
+
     let addr = format!("0.0.0.0:{}", port);
     info!("🚀 Starting recommendation API server on {}", addr);
-    
+
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
-    
+
     Ok(())
 }
 
@@ -131,14 +138,19 @@ async fn get_following_feed(
     Path(user_address): Path<String>,
     Query(query): Query<FeedQuery>,
 ) -> Result<Json<FeedResponse>, StatusCode> {
-    match state.engine
+    match state
+        .engine
         .get_following_feed(&user_address, query.limit, query.offset)
         .await
     {
         Ok(items) => {
             let total = items.len();
             let has_more = total == query.limit;
-            Ok(Json(FeedResponse { items, total, has_more }))
+            Ok(Json(FeedResponse {
+                items,
+                total,
+                has_more,
+            }))
         }
         Err(e) => {
             error!("Failed to get following feed: {:?}", e);
@@ -158,16 +170,23 @@ async fn get_enhanced_feed(
         &state.pool,
         &user_address,
         "enhanced",
-    ).await {
+    )
+    .await
+    {
         let total = cached.len();
         return Ok(Json(FeedResponse {
-            items: cached.into_iter().skip(query.offset).take(query.limit).collect(),
+            items: cached
+                .into_iter()
+                .skip(query.offset)
+                .take(query.limit)
+                .collect(),
             total,
             has_more: total > query.offset + query.limit,
         }));
     }
-    
-    match state.engine
+
+    match state
+        .engine
         .get_enhanced_feed(
             &user_address,
             query.limit,
@@ -184,11 +203,16 @@ async fn get_enhanced_feed(
                 "enhanced",
                 &items,
                 5,
-            ).await;
-            
+            )
+            .await;
+
             let total = items.len();
             let has_more = total == query.limit;
-            Ok(Json(FeedResponse { items, total, has_more }))
+            Ok(Json(FeedResponse {
+                items,
+                total,
+                has_more,
+            }))
         }
         Err(e) => {
             error!("Failed to get enhanced feed: {:?}", e);
@@ -203,7 +227,8 @@ async fn get_recommendations(
     Path(user_address): Path<String>,
     Query(query): Query<RecommendationsQuery>,
 ) -> Result<Json<FeedResponse>, StatusCode> {
-    match state.engine
+    match state
+        .engine
         .get_recommendations(
             &user_address,
             query.limit,
@@ -215,7 +240,11 @@ async fn get_recommendations(
         Ok(items) => {
             let total = items.len();
             // For recommendations, we don't have a concept of "has_more" since it's personalized
-            Ok(Json(FeedResponse { items, total, has_more: false }))
+            Ok(Json(FeedResponse {
+                items,
+                total,
+                has_more: false,
+            }))
         }
         Err(e) => {
             error!("Failed to get recommendations: {:?}", e);
@@ -231,7 +260,8 @@ async fn get_trending(
 ) -> Result<Json<FeedResponse>, StatusCode> {
     // For trending, we use the engine with a generic "user" that has neutral preferences
     // This gives us engagement-weighted results
-    match state.engine
+    match state
+        .engine
         .get_enhanced_feed(
             "0x0000000000000000000000000000000000000000",
             query.limit,
@@ -243,7 +273,11 @@ async fn get_trending(
         Ok(items) => {
             let total = items.len();
             let has_more = total == query.limit;
-            Ok(Json(FeedResponse { items, total, has_more }))
+            Ok(Json(FeedResponse {
+                items,
+                total,
+                has_more,
+            }))
         }
         Err(e) => {
             error!("Failed to get trending: {:?}", e);
@@ -268,7 +302,7 @@ async fn record_user_interaction(
         "unsave" => InteractionType::Unsave,
         _ => return Err(StatusCode::BAD_REQUEST),
     };
-    
+
     let event = InteractionEvent {
         user_address: req.user_address,
         nft_id: req.nft_id,
@@ -279,7 +313,7 @@ async fn record_user_interaction(
         nft_creator_address: req.nft_creator_address,
         nft_tags: req.nft_tags.unwrap_or_default(),
     };
-    
+
     match record_interaction(&state.pool, event).await {
         Ok(_) => Ok(StatusCode::CREATED),
         Err(e) => {
@@ -294,7 +328,9 @@ async fn get_user_preferences(
     State(state): State<Arc<AppState>>,
     Path(user_address): Path<String>,
 ) -> Result<Json<crate::recommendation::UserPreferences>, StatusCode> {
-    match crate::recommendation::preferences::get_or_create_preferences(&state.pool, &user_address).await {
+    match crate::recommendation::preferences::get_or_create_preferences(&state.pool, &user_address)
+        .await
+    {
         Ok(prefs) => Ok(Json(prefs)),
         Err(e) => {
             error!("Failed to get preferences: {:?}", e);

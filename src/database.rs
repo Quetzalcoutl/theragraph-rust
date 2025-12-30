@@ -77,17 +77,19 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<PgPool> {
     );
 
     // Parse connection options
-    let mut connect_options = PgConnectOptions::from_str(&config.url).map_err(|e| Error::Config {
-        message: format!("Invalid database URL: {}", e).into(),
-        source: None,
-    })?;
+    let mut connect_options =
+        PgConnectOptions::from_str(&config.url).map_err(|e| Error::Config {
+            message: format!("Invalid database URL: {}", e).into(),
+            source: None,
+        })?;
 
     // Set statement cache
     connect_options = connect_options.statement_cache_capacity(config.statement_cache_size);
 
     // Disable logging of every query in production (can be enabled via SQLX_LOG=true)
     connect_options = connect_options.log_statements(log::LevelFilter::Debug);
-    connect_options = connect_options.log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(1));
+    connect_options =
+        connect_options.log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(1));
 
     let pool = PgPoolOptions::new()
         .max_connections(config.max_connections)
@@ -121,12 +123,13 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<PgPool> {
         })?;
 
     // Verify we can connect
-    sqlx::query("SELECT 1").fetch_one(&pool).await.map_err(|e| {
-        Error::Database {
+    sqlx::query("SELECT 1")
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| Error::Database {
             message: format!("Failed to verify database connection: {}", e).into(),
             source: Some(e),
-        }
-    })?;
+        })?;
 
     info!(
         "Database connection pool created (size: {}, idle: {})",

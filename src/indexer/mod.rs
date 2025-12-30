@@ -10,8 +10,8 @@
 //! - `thera_social` - TheraFriends unified contract (social features)
 
 pub mod friend;
-pub mod thera_social;
 pub mod thera_friends;
+pub mod thera_social;
 
 use crate::error::{Error, Result};
 use ethers::prelude::*;
@@ -40,19 +40,16 @@ pub struct IndexerState {
     pub last_block: u64,
 }
 
-/// Get last indexed block from database
-/// 
-/// Uses case-insensitive address matching to handle both checksummed 
-/// and lowercase Ethereum addresses from Elixir/Rust indexers.
-#[instrument(skip(pool))]
 pub async fn get_last_indexed_block(
     pool: &PgPool,
     contract_address: &str,
+    contract_type: &str,
 ) -> Result<Option<u64>> {
     let addr_lower = contract_address.to_lowercase();
     let result = sqlx::query_scalar!(
-        "SELECT last_block FROM indexer_state WHERE LOWER(contract_address) = $1",
-        addr_lower
+        "SELECT last_block FROM indexer_state WHERE LOWER(contract_address) = $1 AND contract_type = $2",
+        addr_lower,
+        contract_type
     )
     .fetch_optional(pool)
     .await?;
@@ -61,9 +58,10 @@ pub async fn get_last_indexed_block(
 }
 
 /// Save last indexed block to database
-/// 
+///
 /// Uses case-insensitive upsert to handle both checksummed and lowercase addresses.
 /// Addresses are stored in lowercase for consistency.
+/// Note: The database has a unique constraint on contract_address alone (not contract_address + contract_type)
 #[instrument(skip(pool))]
 pub async fn save_last_indexed_block(
     pool: &PgPool,
@@ -72,36 +70,24 @@ pub async fn save_last_indexed_block(
     block: u64,
 ) -> Result<()> {
     let addr_lower = contract_address.to_lowercase();
-    
-    // First try to update existing record (case-insensitive)
-    let rows_affected = sqlx::query!(
+
+    // Use ON CONFLICT with the actual constraint (contract_address only)
+    // Update both last_block and contract_type to handle type changes
+    sqlx::query!(
         r#"
-        UPDATE indexer_state 
-        SET last_block = $2, updated_at = NOW()
-        WHERE LOWER(contract_address) = $1
+        INSERT INTO indexer_state (id, contract_address, contract_type, last_block, inserted_at, updated_at) 
+        VALUES (gen_random_uuid(), $1, $2, $3, NOW(), NOW())
+        ON CONFLICT (contract_address) DO UPDATE 
+        SET last_block = EXCLUDED.last_block, 
+            contract_type = EXCLUDED.contract_type,
+            updated_at = NOW()
         "#,
         addr_lower,
+        contract_type,
         block as i64
     )
     .execute(pool)
-    .await?
-    .rows_affected();
-    
-    // If no rows updated, insert new record with lowercase address
-    if rows_affected == 0 {
-        sqlx::query!(
-            r#"
-            INSERT INTO indexer_state (id, contract_address, contract_type, last_block, inserted_at, updated_at) 
-            VALUES (gen_random_uuid(), $1, $2, $3, NOW(), NOW())
-            ON CONFLICT (contract_address) DO UPDATE SET last_block = $3, updated_at = NOW()
-            "#,
-            addr_lower,
-            contract_type,
-            block as i64
-        )
-        .execute(pool)
-        .await?;
-    }
+    .await?;
 
     Ok(())
 }
@@ -251,6 +237,3 @@ mod tests {
         assert_eq!(value, U256::from(42));
     }
 }
-
-
-

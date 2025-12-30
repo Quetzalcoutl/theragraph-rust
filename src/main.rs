@@ -41,6 +41,7 @@ use kafka::KafkaProducer;
 pub struct AppState {
     pub config: Arc<Config>,
     pub db: Database,
+    pub elixir_db: Database,
     pub kafka: KafkaProducer,
     pub shutdown: broadcast::Sender<()>,
 }
@@ -80,10 +81,16 @@ async fn main() -> Result<()> {
     database::run_migrations(db.pool()).await?;
     info!("✅ Database migrations applied");
 
+    // Initialize Elixir database connection
+    info!("🔗 Connecting to Elixir database...");
+    let elixir_db = Database::new(&config.elixir_database).await?;
+    info!("✅ Connected to Elixir database");
+
     // Create shared state
     let state = Arc::new(AppState {
         config: config.clone(),
         db: db.clone(),
+        elixir_db: elixir_db.clone(),
         kafka: kafka_producer.clone(),
         shutdown: shutdown_tx.clone(),
     });
@@ -111,7 +118,10 @@ async fn main() -> Result<()> {
     info!("═══════════════════════════════════════════════════════════════");
     info!("  ✅ All services started successfully");
     info!("  📡 API: http://{}:{}", config.api.host, config.api.port);
-    info!("  🔗 Health: http://{}:{}/health", config.api.host, config.api.port);
+    info!(
+        "  🔗 Health: http://{}:{}/health",
+        config.api.host, config.api.port
+    );
     info!("═══════════════════════════════════════════════════════════════");
 
     // Wait for shutdown signal or service failure
@@ -126,7 +136,7 @@ async fn main() -> Result<()> {
 
     // Graceful shutdown
     info!("🛑 Initiating graceful shutdown...");
-    
+
     // Signal all services to stop
     let _ = shutdown_tx.send(());
 
@@ -196,7 +206,7 @@ fn spawn_score_updater(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let update_interval = state.config.recommendation.engagement_update_interval;
         let mut interval = tokio::time::interval(update_interval);
-        
+
         // Skip first tick (runs immediately otherwise)
         interval.tick().await;
 
@@ -204,21 +214,26 @@ fn spawn_score_updater(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
             tokio::select! {
                 _ = interval.tick() => {
                     info!("📊 Running scheduled score updates...");
-                    
+
                     let pool = state.db.pool();
-                    
+
                     if let Err(e) = recommendation::features::update_engagement_scores(pool).await {
                         error!("Failed to update engagement scores: {:?}", e);
                     }
-                    
+
                     if let Err(e) = recommendation::features::update_trending_scores(pool).await {
                         error!("Failed to update trending scores: {:?}", e);
                     }
-                    
+
                     if let Err(e) = recommendation::preferences::apply_preference_decay(pool).await {
                         error!("Failed to apply preference decay: {:?}", e);
                     }
-                    
+
+                    // Generate personalized recommendations for active users
+                    if let Err(e) = recommendation::updater::update_all_recommendations(pool).await {
+                        error!("Failed to update user recommendations: {:?}", e);
+                    }
+
                     info!("✅ Score updates completed");
                 }
                 _ = shutdown_rx.recv() => {
