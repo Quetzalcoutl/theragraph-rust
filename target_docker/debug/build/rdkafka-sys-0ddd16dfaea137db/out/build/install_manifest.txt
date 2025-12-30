@@ -1,0 +1,13 @@
+/app/target_docker/debug/build/rdkafka-sys-0ddd16dfaea137db/out/lib/cmake/RdKafka/RdKafkaConfig.cmake
+/app/target_docker/debug/build/rdkafka-sys-0ddd16dfaea137db/out/lib/cmake/RdKafka/RdKafkaConfigVersion.cmake
+/app/target_docker/debug/build/rdkafka-sys-0ddd16dfaea137db/out/lib/cmake/RdKafka/FindLZ4.cmake
+/app/target_docker/debug/build/rdkafka-sys-0ddd16dfaea137db/out/lib/cmake/RdKafka/RdKafkaTargets.cmake
+/app/target_docker/debug/build/rdkafka-sys-0ddd16dfaea137db/out/lib/cmake/RdKafka/RdKafkaTargets-debug.cmake
+/app/target_docker/debug/build/rdkafka-sys-0ddd16dfaea137db/out/share/licenses/librdkafka/LICENSES.txt
+/app/target_docker/debug/build/rdkafka-sys-0ddd16dfaea137db/out/lib/pkgconfig/rdkafka-static.pc
+/app/target_docker/debug/build/rdkafka-sys-0ddd16dfaea137db/out/lib/librdkafka.a
+/app/target_docker/debug/build/rdkafka-sys-0ddd16dfaea137db/out/include/librdkafka/rdkafka.h
+/app/target_docker/debug/build/rdkafka-sys-0ddd16dfaea137db/out/include/librdkafka/rdkafka_mock.h
+/app/target_docker/debug/build/rdkafka-sys-0ddd16dfaea137db/out/lib/pkgconfig/rdkafka++-static.pc
+/app/target_docker/debug/build/rdkafka-sys-0ddd16dfaea137db/out/lib/librdkafka++.a
+/app/target_docker/debug/build/rdkafka-sys-0ddd16dfaea137db/out/include/librdkafka/rdkafkacpp.h

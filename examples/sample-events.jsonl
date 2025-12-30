@@ -1,0 +1,3 @@
+{"event_id": "e1", "type": "follow", "actor_id": "user:1", "target_id": "user:2", "timestamp": 1710000000, "partition_id": 1}
+{"event_id": "e2", "type": "follow", "actor_id": "user:1", "target_id": "user:3", "timestamp": 1710000004, "partition_id": 1}
+{"event_id": "e3", "type": "view", "actor_id": "user:2", "target_id": "video:1", "timestamp": 1710000123, "partition_id": 2}

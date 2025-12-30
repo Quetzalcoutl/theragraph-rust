@@ -1,0 +1,103 @@
+Building and linking librdkafka statically
+CMake Deprecation Warning at CMakeLists.txt:1 (cmake_minimum_required):
+  Compatibility with CMake < 3.10 will be removed from a future version of
+  CMake.
+
+  Update the VERSION argument <min> value.  Or, use the <min>...<max> syntax
+  to tell CMake that the project requires at least <min> but has been updated
+  to work with policies introduced by <max> or earlier.
+
+
+CMake Warning:
+  Manually-specified variables were not used by the project:
+
+    CMAKE_ASM_COMPILER
+    CMAKE_ASM_FLAGS
+    CMAKE_POLICY_VERSION_MINIMUM
+
+
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c: In function 'rd_kafka_ssl_set_certs':
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c:1580:17: warning: 'ENGINE_load_ssl_client_cert' is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+ 1580 |                 r    = ENGINE_load_ssl_client_cert(
+      |                 ^
+In file included from /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_conf.h:40,
+                 from /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_int.h:116,
+                 from /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c:36:
+/usr/include/openssl/engine.h:644:5: note: declared here
+  644 | int ENGINE_load_ssl_client_cert(ENGINE *e, SSL *s, STACK_OF(X509_NAME) *ca_dn,
+      |     ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c: In function 'rd_kafka_ssl_ctx_term':
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c:1654:9: warning: 'ENGINE_free' is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+ 1654 |         RD_IF_FREE(rk->rk_conf.ssl.engine, ENGINE_free);
+      |         ^~~~~~~~~~
+/usr/include/openssl/engine.h:493:27: note: declared here
+  493 | OSSL_DEPRECATEDIN_3_0 int ENGINE_free(ENGINE *e);
+      |                           ^~~~~~~~~~~
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c: In function 'rd_kafka_ssl_ctx_init_engine':
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c:1674:9: warning: 'ENGINE_by_id' is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+ 1674 |         engine = ENGINE_by_id(rk->rk_conf.ssl.engine_id);
+      |         ^~~~~~
+/usr/include/openssl/engine.h:336:31: note: declared here
+  336 | OSSL_DEPRECATEDIN_3_0 ENGINE *ENGINE_by_id(const char *id);
+      |                               ^~~~~~~~~~~~
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c:1676:17: warning: 'ENGINE_by_id' is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+ 1676 |                 engine = ENGINE_by_id("dynamic");
+      |                 ^~~~~~
+/usr/include/openssl/engine.h:336:31: note: declared here
+  336 | OSSL_DEPRECATEDIN_3_0 ENGINE *ENGINE_by_id(const char *id);
+      |                               ^~~~~~~~~~~~
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c:1685:9: warning: 'ENGINE_ctrl_cmd_string' is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+ 1685 |         if (!ENGINE_ctrl_cmd_string(engine, "SO_PATH",
+      |         ^~
+/usr/include/openssl/engine.h:479:5: note: declared here
+  479 | int ENGINE_ctrl_cmd_string(ENGINE *e, const char *cmd_name, const char *arg,
+      |     ^~~~~~~~~~~~~~~~~~~~~~
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c:1687:17: warning: 'ENGINE_free' is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+ 1687 |                 ENGINE_free(engine);
+      |                 ^~~~~~~~~~~
+/usr/include/openssl/engine.h:493:27: note: declared here
+  493 | OSSL_DEPRECATEDIN_3_0 int ENGINE_free(ENGINE *e);
+      |                           ^~~~~~~~~~~
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c:1694:9: warning: 'ENGINE_ctrl_cmd_string' is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+ 1694 |         if (!ENGINE_ctrl_cmd_string(engine, "LIST_ADD", "1", 0)) {
+      |         ^~
+/usr/include/openssl/engine.h:479:5: note: declared here
+  479 | int ENGINE_ctrl_cmd_string(ENGINE *e, const char *cmd_name, const char *arg,
+      |     ^~~~~~~~~~~~~~~~~~~~~~
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c:1695:17: warning: 'ENGINE_free' is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+ 1695 |                 ENGINE_free(engine);
+      |                 ^~~~~~~~~~~
+/usr/include/openssl/engine.h:493:27: note: declared here
+  493 | OSSL_DEPRECATEDIN_3_0 int ENGINE_free(ENGINE *e);
+      |                           ^~~~~~~~~~~
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c:1702:9: warning: 'ENGINE_ctrl_cmd_string' is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+ 1702 |         if (!ENGINE_ctrl_cmd_string(engine, "LOAD", NULL, 0)) {
+      |         ^~
+/usr/include/openssl/engine.h:479:5: note: declared here
+  479 | int ENGINE_ctrl_cmd_string(ENGINE *e, const char *cmd_name, const char *arg,
+      |     ^~~~~~~~~~~~~~~~~~~~~~
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c:1703:17: warning: 'ENGINE_free' is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+ 1703 |                 ENGINE_free(engine);
+      |                 ^~~~~~~~~~~
+/usr/include/openssl/engine.h:493:27: note: declared here
+  493 | OSSL_DEPRECATEDIN_3_0 int ENGINE_free(ENGINE *e);
+      |                           ^~~~~~~~~~~
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c:1710:9: warning: 'ENGINE_init' is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+ 1710 |         if (!ENGINE_init(engine)) {
+      |         ^~
+/usr/include/openssl/engine.h:620:27: note: declared here
+  620 | OSSL_DEPRECATEDIN_3_0 int ENGINE_init(ENGINE *e);
+      |                           ^~~~~~~~~~~
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c:1711:17: warning: 'ENGINE_free' is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+ 1711 |                 ENGINE_free(engine);
+      |                 ^~~~~~~~~~~
+/usr/include/openssl/engine.h:493:27: note: declared here
+  493 | OSSL_DEPRECATEDIN_3_0 int ENGINE_free(ENGINE *e);
+      |                           ^~~~~~~~~~~
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c: In function 'rd_kafka_ssl_ctx_init':
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rdkafka-sys-4.9.0+2.10.0/librdkafka/src/rdkafka_ssl.c:1951:9: warning: 'ENGINE_free' is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+ 1951 |         RD_IF_FREE(rk->rk_conf.ssl.engine, ENGINE_free);
+      |         ^~~~~~~~~~
+/usr/include/openssl/engine.h:493:27: note: declared here
+  493 | OSSL_DEPRECATEDIN_3_0 int ENGINE_free(ENGINE *e);
+      |                           ^~~~~~~~~~~

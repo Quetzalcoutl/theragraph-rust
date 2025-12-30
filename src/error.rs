@@ -193,7 +193,10 @@ impl Error {
     }
 
     /// Create a database error with source
-    pub fn database_with_source(message: impl Into<Cow<'static, str>>, source: sqlx::Error) -> Self {
+    pub fn database_with_source(
+        message: impl Into<Cow<'static, str>>,
+        source: sqlx::Error,
+    ) -> Self {
         Self::Database {
             message: message.into(),
             source: Some(source),
@@ -272,9 +275,9 @@ impl Error {
     /// Get HTTP status code for this error
     pub fn status_code(&self) -> StatusCode {
         match self {
-            Error::BadRequest { .. } | Error::InvalidFormat { .. } | Error::InvalidAddress { .. } => {
-                StatusCode::BAD_REQUEST
-            }
+            Error::BadRequest { .. }
+            | Error::InvalidFormat { .. }
+            | Error::InvalidAddress { .. } => StatusCode::BAD_REQUEST,
             Error::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
             Error::Forbidden { .. } => StatusCode::FORBIDDEN,
             Error::NotFound { .. } | Error::PreferencesNotFound { .. } => StatusCode::NOT_FOUND,
@@ -307,9 +310,9 @@ impl Error {
             | Error::EventDecode { .. }
             | Error::BlockNotFound { .. } => "BLOCKCHAIN_ERROR",
             Error::RateLimited { .. } => "RATE_LIMITED",
-            Error::Kafka { .. } | Error::KafkaProducerFailed { .. } | Error::KafkaConsumer { .. } => {
-                "KAFKA_ERROR"
-            }
+            Error::Kafka { .. }
+            | Error::KafkaProducerFailed { .. }
+            | Error::KafkaConsumer { .. } => "KAFKA_ERROR",
             Error::BadRequest { .. } => "BAD_REQUEST",
             Error::Unauthorized { .. } => "UNAUTHORIZED",
             Error::Forbidden { .. } => "FORBIDDEN",
@@ -465,7 +468,10 @@ mod tests {
     #[test]
     fn test_error_retryable() {
         assert!(Error::PoolExhausted.is_retryable());
-        assert!(Error::RateLimited { retry_after_ms: 1000 }.is_retryable());
+        assert!(Error::RateLimited {
+            retry_after_ms: 1000
+        }
+        .is_retryable());
         assert!(!Error::NotFound {
             entity_type: "nft",
             id: "123".to_string()

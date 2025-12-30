@@ -1,0 +1,51 @@
+-- NebulaGraph Schema for TheraGraph Recommendation Engine
+-- Designed for high-performance social graph traversal (ByteGraph Style)
+
+-- 1. Create Space with optimal partition_num (usually 10x cluster nodes)
+CREATE SPACE IF NOT EXISTS thera_social (partition_num=10, replica_factor=1, vid_type=FIXED_STRING(42));
+USE thera_social;
+
+-- 2. Define Tags (Properties on Vertices)
+-- User Vertex
+CREATE TAG IF NOT EXISTS user(
+    username string,
+    reputation double DEFAULT 0.0,
+    created_at timestamp
+);
+
+-- NFT Vertex
+CREATE TAG IF NOT EXISTS nft(
+    token_id int,
+    contract_address string,
+    category string, -- 'art', 'music', 'flix', 'snap'
+    score double DEFAULT 0.0
+);
+
+-- 3. Define Edge Types (Relationships)
+-- Follows: directed graph for "Friend of Friend" logic
+CREATE EDGE IF NOT EXISTS follows(
+    created_at timestamp,
+    weight double DEFAULT 1.0
+);
+
+-- Likes: User -> NFT affinity
+CREATE EDGE IF NOT EXISTS likes(
+    created_at timestamp,
+    weight double DEFAULT 1.0
+);
+
+-- 4. Indexes for fast lookup
+CREATE TAG INDEX IF NOT EXISTS user_username_index ON user(username(20));
+CREATE TAG INDEX IF NOT EXISTS nft_contract_index ON nft(contract_address(42));
+CREATE EDGE INDEX IF NOT EXISTS follows_index ON follows();
+CREATE EDGE INDEX IF NOT EXISTS likes_index ON likes();
+
+-- 5. Example "Dream Team" Query: Friend-of-Friend Recommendations
+-- "Find NFTs liked by people my friends follow"
+/*
+GO FROM "user_1" OVER follows YIELD dst(edge) AS friend_id
+| GO FROM $-.friend_id OVER likes YIELD dst(edge) AS nft_id
+| FETCH PROP ON nft $-.nft_id YIELD vertex as v, properties(vertex).score as score
+| ORDER BY score DESC
+| LIMIT 20;
+*/

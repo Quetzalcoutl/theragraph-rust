@@ -18,7 +18,7 @@ use crate::error::Result;
 use ethers::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use once_cell::sync::Lazy;
 
 // ============================================================================
 // Event Signatures (keccak256 hashes)
@@ -26,7 +26,7 @@ use std::sync::LazyLock;
 
 /// Pre-computed event signatures for TheraGraph contracts
 /// These match the signatures in `TheraGraph.Indexer.EventParser` on the Elixir side
-pub static EVENT_SIGNATURES: LazyLock<HashMap<H256, EventType>> = LazyLock::new(|| {
+pub static EVENT_SIGNATURES: Lazy<HashMap<H256, EventType>> = Lazy::new(|| {
     let mut m = HashMap::new();
 
     // === TheraSnap Events ===
@@ -241,6 +241,10 @@ pub static EVENT_SIGNATURES: LazyLock<HashMap<H256, EventType>> = LazyLock::new(
         EventType::ProfileUpdated,
     );
     m.insert(
+        h256_from_hex("0xb493045fc13318793ba6deaf400d8f23236835ab7c056d18196896cf98fbd9d9"),
+        EventType::ProfileUpdatedExtended,
+    );
+    m.insert(
         h256_from_hex("0x22b3126528cda4618d13b6945f5e96fe53a5125f386aa591ee89134e2681c621"),
         EventType::UserVerified,
     );
@@ -255,6 +259,18 @@ pub static EVENT_SIGNATURES: LazyLock<HashMap<H256, EventType>> = LazyLock::new(
     m.insert(
         h256_from_hex("0x90dac969af4a4897610ef8f0cd934c54409861eb7bd2205e552f8f2296ee5d3e"),
         EventType::EarningsWithdrawn,
+    );
+    m.insert(
+        h256_from_hex("0xe913bf0f321ec4538e6e03894963538ad29d5bc7610699f655b8d4be77ef3c31"),
+        EventType::ContentMinted,
+    );
+    m.insert(
+        h256_from_hex("0x80c2e061ec45ed7331a60555bbadc701bd26c6335bcd10063bc2fe287d040f2f"),
+        EventType::ContentCopyMinted,
+    );
+    m.insert(
+        h256_from_hex("0xc83ca0840994260dfd9b90ce0f552ac8a0424cae524b6dee6b476a78f6fbdc30"),
+        EventType::BurnedContentRevenue,
     );
     m.insert(
         h256_from_hex("0x08031759b0a2a99f63000784e546d7320d30692b97de1ea89a1645380cfb16f8"),
@@ -285,7 +301,9 @@ pub static EVENT_SIGNATURES: LazyLock<HashMap<H256, EventType>> = LazyLock::new(
         EventType::BadgeRemoved,
     );
     m.insert(
-        keccak256_signature("PricesUpdated(uint128,uint128,uint128,uint128,uint128,uint64,uint64,uint256)"),
+        keccak256_signature(
+            "PricesUpdated(uint128,uint128,uint128,uint128,uint128,uint64,uint64,uint256)",
+        ),
         EventType::PricesUpdated,
     );
 
@@ -346,13 +364,14 @@ pub enum EventType {
     UsernameRegistered,
     UsernameTransferred,
     ProfileUpdated,
+    ProfileUpdatedExtended,
     NotificationEvent,
     EarningsWithdrawn,
     UserVerified,
     UserUnverified,
     UserBlocked,
     UserUnblocked,
-    
+
     // Unified TheraFriends content & social events
     ContentMinted,
     ContentCopyMinted,
@@ -364,6 +383,7 @@ pub enum EventType {
     ContentShared,
     ContentRequirementsUpdated,
     ContentBurned,
+    BurnedContentRevenue,
     UserFollowed,
     UserUnfollowed,
     TreasuryUpdated,
@@ -418,6 +438,7 @@ impl EventType {
             | EventType::UsernameRegistered
             | EventType::UsernameTransferred
             | EventType::ProfileUpdated
+            | EventType::ProfileUpdatedExtended
             | EventType::NotificationEvent
             | EventType::EarningsWithdrawn
             | EventType::UserVerified
@@ -446,6 +467,7 @@ impl EventType {
             EventType::Transfer
             | EventType::PurchaseProcessed
             | EventType::RoyaltyDistributed
+            | EventType::BurnedContentRevenue
             | EventType::CollabProposed
             | EventType::Unknown => "common",
         }
@@ -610,6 +632,14 @@ pub enum ParsedEventData {
         followed_username: String,
         timestamp: String,
     },
+    /// ProfileUpdatedExtended event data (username, profileHash, bio, website, timestamp)
+    ProfileUpdatedExtended {
+        username: String,
+        profile_hash: String,
+        bio: String,
+        website: String,
+        timestamp: String,
+    },
     /// Transfer event data
     Transfer {
         from: String,
@@ -662,19 +692,17 @@ pub fn parse_log(log: &Log, fallback_contract_type: &str) -> Result<ParsedEvent>
     };
 
     // If this is a ContentMinted event, it includes ContentType as the 3rd indexed param
-    if matches!(event_type, EventType::ContentMinted) {
-        if indexed_params.len() >= 3 {
-            // contentType is encoded as decimal string in topics
-            let ct = indexed_params.get(2).map(|s| s.parse::<u64>().ok()).flatten();
-            if let Some(ctv) = ct {
-                contract_type = match ctv {
-                    0 => "art".to_string(),
-                    1 => "flix".to_string(),
-                    2 => "music".to_string(),
-                    3 => "snap".to_string(),
-                    _ => contract_type,
-                };
-            }
+    if matches!(event_type, EventType::ContentMinted) && indexed_params.len() >= 3 {
+        // contentType is encoded as decimal string in topics
+        let ct = indexed_params.get(2).and_then(|s| s.parse::<u64>().ok());
+        if let Some(ctv) = ct {
+            contract_type = match ctv {
+                0 => "art".to_string(),
+                1 => "flix".to_string(),
+                2 => "music".to_string(),
+                3 => "snap".to_string(),
+                _ => contract_type,
+            };
         }
     }
 
@@ -785,11 +813,13 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
             2 => IndexedParamType::Address, // creator
             _ => IndexedParamType::Bytes32,
         },
-        EventType::ContentCommented | EventType::ContentBlocked | EventType::ContentBookmarked => match param_index {
-            0 => IndexedParamType::Uint256, // tokenId
-            1 => IndexedParamType::Address, // commenter / moderator / user
-            _ => IndexedParamType::Bytes32,
-        },
+        EventType::ContentCommented | EventType::ContentBlocked | EventType::ContentBookmarked => {
+            match param_index {
+                0 => IndexedParamType::Uint256, // tokenId
+                1 => IndexedParamType::Address, // commenter / moderator / user
+                _ => IndexedParamType::Bytes32,
+            }
+        }
         EventType::ContentShared => match param_index {
             0 => IndexedParamType::Uint256, // tokenId
             1 => IndexedParamType::Address, // sharer
@@ -846,12 +876,12 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
             _ => IndexedParamType::Bytes32,
         },
 
-        EventType::UsernameRegistered
-        | EventType::UserVerified
-        | EventType::UserUnverified => match param_index {
-            0 => IndexedParamType::Address, // user
-            _ => IndexedParamType::Bytes32,
-        },
+        EventType::UsernameRegistered | EventType::UserVerified | EventType::UserUnverified => {
+            match param_index {
+                0 => IndexedParamType::Address, // user
+                _ => IndexedParamType::Bytes32,
+            }
+        }
 
         EventType::UsernameTransferred => match param_index {
             0 => IndexedParamType::Address, // from
@@ -860,6 +890,11 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
         },
 
         EventType::ProfileUpdated => match param_index {
+            0 => IndexedParamType::Address, // user
+            _ => IndexedParamType::Bytes32,
+        },
+
+        EventType::ProfileUpdatedExtended => match param_index {
             0 => IndexedParamType::Address, // user
             _ => IndexedParamType::Bytes32,
         },
@@ -898,6 +933,7 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
         | EventType::PricesUpdated
         | EventType::ContentRequirementsUpdated
         | EventType::ContentBurned
+        | EventType::BurnedContentRevenue
         | EventType::TreasuryUpdated
         | EventType::DailyLimitsUpdated
         | EventType::TokensRecovered => IndexedParamType::Bytes32,
@@ -914,7 +950,7 @@ fn parse_event_data(
     match event_type {
         EventType::ContentMinted => {
             // ContentMinted(uint256 tokenId, address creator, uint8 contentType, uint256 price, uint256 timestamp)
-            let token_id = indexed_params.get(0).cloned().unwrap_or_default();
+            let token_id = indexed_params.first().cloned().unwrap_or_default();
             let creator = indexed_params.get(1).cloned().unwrap_or_default();
             let content_type = indexed_params.get(2).cloned().unwrap_or_default();
 
@@ -943,7 +979,7 @@ fn parse_event_data(
 
         EventType::ContentCopyMinted => {
             // ContentCopyMinted(uint256 originalId, address buyer, uint256 newTokenId, uint8 contentType, uint256 timestamp)
-            let original = indexed_params.get(0).cloned().unwrap_or_default();
+            let original = indexed_params.first().cloned().unwrap_or_default();
             let buyer = indexed_params.get(1).cloned().unwrap_or_default();
             let new_token_id = indexed_params.get(2).cloned().unwrap_or_default();
 
@@ -963,17 +999,17 @@ fn parse_event_data(
             };
 
             Some(ParsedEventData::BoughtAndMinted {
-                    token_id: original,
-                    buyer,
-                    seller: String::new(),
-                    price: String::new(),
-                    new_token_id,
-                })
+                token_id: original,
+                buyer,
+                seller: String::new(),
+                price: String::new(),
+                new_token_id,
+            })
         }
 
         EventType::ContentLiked => {
             // ContentLiked(uint256 tokenId, address liker, address creator, uint256 timestamp)
-            let token_id = indexed_params.get(0).cloned().unwrap_or_default();
+            let token_id = indexed_params.first().cloned().unwrap_or_default();
             let liker = indexed_params.get(1).cloned().unwrap_or_default();
             Some(ParsedEventData::Liked {
                 token_id,
@@ -984,7 +1020,7 @@ fn parse_event_data(
 
         EventType::ContentUnliked => {
             // ContentUnliked(uint256 tokenId, address unliker, address creator, uint256 timestamp)
-            let token_id = indexed_params.get(0).cloned().unwrap_or_default();
+            let token_id = indexed_params.first().cloned().unwrap_or_default();
             let unliker = indexed_params.get(1).cloned().unwrap_or_default();
             Some(ParsedEventData::Liked {
                 token_id,
@@ -995,7 +1031,7 @@ fn parse_event_data(
 
         EventType::ContentCommented => {
             // ContentCommented(uint256 tokenId, address commenter, uint8 contentType, uint256 commentId, string commentText)
-            let token_id = indexed_params.get(0).cloned().unwrap_or_default();
+            let token_id = indexed_params.first().cloned().unwrap_or_default();
             let comment_id = if data.len() >= 32 {
                 U256::from_big_endian(&data[0..32]).to_string()
             } else {
@@ -1012,7 +1048,7 @@ fn parse_event_data(
 
         EventType::ContentBlocked => {
             // ContentBlocked(uint256 tokenId, address blockedBy, uint8 contentType, string reason)
-            let token_id = indexed_params.get(0).cloned().unwrap_or_default();
+            let token_id = indexed_params.first().cloned().unwrap_or_default();
             let blocked_by = indexed_params.get(1).cloned().unwrap_or_default();
             Some(ParsedEventData::Deleted {
                 token_id,
@@ -1022,14 +1058,18 @@ fn parse_event_data(
 
         EventType::ContentBookmarked => {
             // ContentBookmarked(uint256 tokenId, address user, bool bookmarked, uint256 timestamp)
-            let token_id = indexed_params.get(0).cloned().unwrap_or_default();
+            let token_id = indexed_params.first().cloned().unwrap_or_default();
             let user = indexed_params.get(1).cloned().unwrap_or_default();
-            Some(ParsedEventData::Transfer { from: user, to: String::new(), token_id })
+            Some(ParsedEventData::Transfer {
+                from: user,
+                to: String::new(),
+                token_id,
+            })
         }
 
         EventType::ContentShared => {
             // ContentShared(uint256 tokenId, address sharer, address recipient, uint256 timestamp)
-            let token_id = indexed_params.get(0).cloned().unwrap_or_default();
+            let token_id = indexed_params.first().cloned().unwrap_or_default();
             let sharer = indexed_params.get(1).cloned().unwrap_or_default();
             let recipient = indexed_params.get(2).cloned().unwrap_or_default();
             Some(ParsedEventData::Transfer {
@@ -1045,14 +1085,11 @@ fn parse_event_data(
             // Minted(uint256 indexed tokenId, string uri, address creator)
             // tokenId is in indexed_params[0]
             // uri and creator are in data
-            let token_id = indexed_params.get(0).cloned().unwrap_or_default();
+            let token_id = indexed_params.first().cloned().unwrap_or_default();
 
             if data.len() >= 64 {
                 // Decode creator address (last 20 bytes of first 32-byte word)
-                let creator = format!(
-                    "0x{}",
-                    hex::encode(&data[12..32])
-                );
+                let creator = format!("0x{}", hex::encode(&data[12..32]));
                 // Legacy minted events did not include price/timestamp; keep fields empty
                 Some(ParsedEventData::Minted {
                     token_id,
@@ -1074,7 +1111,7 @@ fn parse_event_data(
         | EventType::MusicLiked
         | EventType::FlixLiked => {
             // Liked(uint256 indexed tokenId, address liker, uint256 totalLikes)
-            let token_id = indexed_params.get(0).cloned().unwrap_or_default();
+            let token_id = indexed_params.first().cloned().unwrap_or_default();
 
             if data.len() >= 64 {
                 let liker = format!("0x{}", hex::encode(&data[12..32]));
@@ -1091,12 +1128,57 @@ fn parse_event_data(
 
         EventType::Transfer => {
             // Transfer(address indexed from, address indexed to, uint256 indexed tokenId)
-            let from = indexed_params.get(0).cloned().unwrap_or_default();
+            let from = indexed_params.first().cloned().unwrap_or_default();
             let to = indexed_params.get(1).cloned().unwrap_or_default();
             let token_id = indexed_params.get(2).cloned().unwrap_or_default();
             Some(ParsedEventData::Transfer { from, to, token_id })
         }
 
+        EventType::ProfileUpdatedExtended => {
+            // ProfileUpdatedExtended(address indexed user, string username, string profileHash, string bio, string website, uint256 timestamp)
+            if data.is_empty() {
+                None
+            } else {
+                // Decode dynamic strings + uint256 from data payload
+                match ethers::abi::decode(
+                    &[
+                        ethers::abi::ParamType::String,
+                        ethers::abi::ParamType::String,
+                        ethers::abi::ParamType::String,
+                        ethers::abi::ParamType::String,
+                        ethers::abi::ParamType::Uint(256),
+                    ],
+                    &data.0,
+                ) {
+                    Ok(tokens) => {
+                        use ethers::abi::Token;
+                        let username = tokens
+                            .get(0)
+                            .and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None })
+                            .unwrap_or_default();
+                        let profile_hash = tokens
+                            .get(1)
+                            .and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None })
+                            .unwrap_or_default();
+                        let bio = tokens
+                            .get(2)
+                            .and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None })
+                            .unwrap_or_default();
+                        let website = tokens
+                            .get(3)
+                            .and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None })
+                            .unwrap_or_default();
+                        let timestamp = tokens
+                            .get(4)
+                            .and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None })
+                            .unwrap_or_default();
+
+                        Some(ParsedEventData::ProfileUpdatedExtended { username, profile_hash, bio, website, timestamp })
+                    }
+                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
+                }
+            }
+        }
         _ => {
             // For unknown events, just return raw data
             if data.is_empty() {
@@ -1124,7 +1206,8 @@ mod tests {
     fn test_event_signature_lookup() {
         let sig = keccak256_signature("SnapMinted(uint256,string,address)");
         assert_eq!(EVENT_SIGNATURES.get(&sig), Some(&EventType::SnapMinted));
-        let sig2 = h256_from_hex("0xe913bf0f321ec4538e6e03894963538ad29d5bc7610699f655b8d4be77ef3c31");
+        let sig2 =
+            h256_from_hex("0xe913bf0f321ec4538e6e03894963538ad29d5bc7610699f655b8d4be77ef3c31");
         assert_eq!(EVENT_SIGNATURES.get(&sig2), Some(&EventType::ContentMinted));
     }
 
@@ -1132,6 +1215,44 @@ mod tests {
     fn test_event_type_contract() {
         assert_eq!(EventType::SnapMinted.contract_type(), "snap");
         assert_eq!(EventType::Followed.contract_type(), "friends");
+    }
+
+    #[test]
+    fn test_parse_profile_updated_extended() {
+        use ethers::abi::Token;
+        use ethers::types::Bytes;
+        // Signature for ProfileUpdatedExtended
+        let sig = h256_from_hex("0xb493045fc13318793ba6deaf400d8f23236835ab7c056d18196896cf98fbd9d9");
+        let user_topic = h256_from_hex("0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+        // Build ABI-encoded data: [username, profileHash, bio, website, timestamp]
+        let tokens = vec![
+            Token::String("alice".to_string()),
+            Token::String("Qmabcdef123".to_string()),
+            Token::String("hello bio".to_string()),
+            Token::String("https://example.com".to_string()),
+            Token::Uint(ethers::types::U256::from(1_700_000_500u64)),
+        ];
+
+        let encoded = ethers::abi::encode(&tokens);
+        let data = Bytes::from(encoded);
+
+        let mut log = ethers::types::Log::default();
+        log.address = ethers::types::H160::from_low_u64_be(0xabc);
+        log.topics = vec![sig, user_topic];
+        log.data = data.clone();
+
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "ProfileUpdatedExtended");
+        if let Some(ParsedEventData::ProfileUpdatedExtended { username, profile_hash, bio, website, timestamp }) = parsed.data {
+            assert_eq!(username, "alice");
+            assert_eq!(profile_hash, "Qmabcdef123");
+            assert_eq!(bio, "hello bio");
+            assert_eq!(website, "https://example.com");
+            assert_eq!(timestamp, "1700000500");
+        } else {
+            panic!("Expected ProfileUpdatedExtended data");
+        }
     }
 
     #[test]
