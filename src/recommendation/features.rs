@@ -214,7 +214,52 @@ pub fn extract_features(
         }
     }
 
-    // Extract from explicit tags field
+    // PRIORITY: Extract hashtags from top-level metadata (max 3 for ByteGraph-style recommendations)
+    // These are user-provided hashtags (max 3) from the frontend forms
+    if let Some(hashtag_array) = metadata.get("hashtags").and_then(|v| v.as_array()) {
+        for hashtag in hashtag_array.iter().take(3) {  // Respect max 3 limit
+            if let Some(h) = hashtag.as_str() {
+                // Hashtags are high-priority tags for personalization
+                let clean_tag = h.trim().to_lowercase();
+                if !clean_tag.is_empty() {
+                    tags.insert(clean_tag);
+                }
+            }
+        }
+    }
+
+    // SECONDARY: Extract hashtags from special_event metadata
+    if let Some(event) = metadata.get("special_event") {
+        if let Some(event_hashtags) = event.get("hashtags").and_then(|v| v.as_array()) {
+            for hashtag in event_hashtags.iter().take(3) {
+                if let Some(h) = hashtag.as_str() {
+                    let clean_tag = h.trim().to_lowercase();
+                    if !clean_tag.is_empty() {
+                        tags.insert(clean_tag);
+                    }
+                }
+            }
+        }
+    }
+
+    // TERTIARY: Extract hashtags from content-specific metadata
+    // (therasnap_metadata, theraart_metadata, theramusic_metadata, theraflix_metadata)
+    for metadata_key in &["therasnap_metadata", "theraart_metadata", "theramusic_metadata", "theraflix_metadata"] {
+        if let Some(content_meta) = metadata.get(*metadata_key) {
+            if let Some(content_hashtags) = content_meta.get("hashtags").and_then(|v| v.as_array()) {
+                for hashtag in content_hashtags.iter().take(3) {
+                    if let Some(h) = hashtag.as_str() {
+                        let clean_tag = h.trim().to_lowercase();
+                        if !clean_tag.is_empty() {
+                            tags.insert(clean_tag);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Extract from explicit tags field (legacy support)
     if let Some(tag_array) = metadata.get("tags").and_then(|v| v.as_array()) {
         for tag in tag_array {
             if let Some(t) = tag.as_str() {

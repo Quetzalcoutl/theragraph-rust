@@ -30,7 +30,9 @@ pub mod features;
 pub mod graph_client;
 pub mod preferences;
 pub mod updater;
+pub mod metrics;
 
 // Re-export the types that are actually used externally
 pub use engine::ScoredNft;
 pub use preferences::UserPreferences;
+// Metrics are used internally by the engine

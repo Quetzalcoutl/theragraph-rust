@@ -248,7 +248,7 @@ fn spawn_score_updater(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
 /// Spawn the API server
 fn spawn_api_server(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     let port = state.config.api.port;
-    let pool = state.db.pool().clone();
+    let pool = state.elixir_db.pool().clone();  // Use Elixir DB for NFT queries
     let mut shutdown_rx = state.shutdown.subscribe();
 
     tokio::spawn(async move {
