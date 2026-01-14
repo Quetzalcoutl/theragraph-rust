@@ -19,8 +19,24 @@ use rdkafka::message::Message;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
+
+/// NFT metadata for enriching interactions
+#[derive(Debug)]
+struct NftMetadata {
+    contract_type: String,
+    creator_address: String,
+    tags: Vec<String>,
+}
+
+/// Database row for NFT metadata lookup
+#[derive(sqlx::FromRow)]
+struct NftMetadataRow {
+    contract_type: String,
+    creator_address: String,
+    tags: Vec<String>,
+}
 
 /// Event processor that consumes Kafka events and updates recommendations
 pub struct EventProcessor {
@@ -42,7 +58,11 @@ impl EventProcessor {
             .set("group.id", &config.kafka.group_id)
             .set("bootstrap.servers", &config.kafka.brokers)
             .set("enable.partition.eof", "false")
-            .set("session.timeout.ms", "6000")
+            // Increased timeouts for stability with high RTT
+            .set("session.timeout.ms", "30000")  // 30 seconds (was 6s)
+            .set("heartbeat.interval.ms", "10000") // 10 seconds (1/3 of session timeout)
+            .set("request.timeout.ms", "60000")  // 60 seconds for requests
+            .set("socket.timeout.ms", "60000")   // 60 seconds socket timeout
             .set("enable.auto.commit", "true")
             .set("auto.offset.reset", "latest")
             .create()
@@ -61,7 +81,53 @@ impl EventProcessor {
         })
     }
 
+    /// Look up the actual NFT UUID from the database using contract address and token ID
+    async fn lookup_nft_uuid(&self, contract_address: &str, token_id: &str) -> Result<Option<Uuid>> {
+        let token_id_int: i64 = token_id.parse().unwrap_or(0);
+        
+        let result: Option<(Uuid,)> = sqlx::query_as(
+            r#"SELECT id FROM nfts WHERE contract_address = $1 AND token_id = $2 LIMIT 1"#
+        )
+        .bind(contract_address.to_lowercase())
+        .bind(token_id_int as i32)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Error::Database {
+            message: "Failed to lookup NFT".into(),
+            source: Some(e),
+        })?;
+        
+        Ok(result.map(|(id,)| id))
+    }
+
+    /// Look up NFT metadata (creator, contract_type, tags) for recording interactions
+    async fn lookup_nft_metadata(&self, nft_id: &Uuid) -> Result<Option<NftMetadata>> {
+        let result = sqlx::query_as::<_, NftMetadataRow>(
+            r#"
+            SELECT n.contract_type, n.creator_address, COALESCE(f.tags, ARRAY[]::text[]) as tags
+            FROM nfts n
+            LEFT JOIN nft_features f ON f.nft_id = n.id
+            WHERE n.id = $1
+            "#
+        )
+        .bind(nft_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Error::Database {
+            message: "Failed to lookup NFT metadata".into(),
+            source: Some(e),
+        })?;
+        
+        Ok(result.map(|r| NftMetadata {
+            contract_type: r.contract_type,
+            creator_address: r.creator_address,
+            tags: r.tags,
+        }))
+    }
+
     /// Generate a consistent UUID for an NFT based on contract address and token ID
+    /// DEPRECATED: Use lookup_nft_uuid instead to get the actual database ID
+    #[allow(dead_code)]
     fn generate_nft_uuid(contract_address: &str, token_id: &str) -> Uuid {
         // Create a deterministic UUID from contract_address + token_id
         // This ensures the same NFT always gets the same UUID
@@ -288,8 +354,28 @@ impl EventProcessor {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            // Generate UUID for the purchased NFT
-            let nft_uuid = Self::generate_nft_uuid(&event.contract_address, new_token_id);
+            // Look up the ORIGINAL NFT UUID (we want to track interest in the original content)
+            let nft_uuid = match self.lookup_nft_uuid(&event.contract_address, original_id).await? {
+                Some(id) => id,
+                None => {
+                    // If original not found, try the new token (might be first copy)
+                    match self.lookup_nft_uuid(&event.contract_address, new_token_id).await? {
+                        Some(id) => id,
+                        None => {
+                            warn!("NFT not found for purchase: contract={}, original_id={}, new_token_id={}", 
+                                event.contract_address, original_id, new_token_id);
+                            return Ok(());
+                        }
+                    }
+                }
+            };
+
+            // Look up NFT metadata
+            let metadata = self.lookup_nft_metadata(&nft_uuid).await?;
+            let (contract_type, creator_addr, tags) = match metadata {
+                Some(m) => (m.contract_type, m.creator_address, m.tags),
+                None => (event.contract_type.clone(), String::new(), vec![]),
+            };
 
             // Record purchase interaction
             let interaction = InteractionEvent {
@@ -298,16 +384,16 @@ impl EventProcessor {
                 interaction_type: InteractionType::Purchase,
                 view_duration_ms: None,
                 source: Some("marketplace".to_string()),
-                nft_contract_type: Some(event.contract_type.clone()),
-                nft_creator_address: None, // TODO: Look up from NFT
-                nft_tags: vec![],
+                nft_contract_type: Some(contract_type),
+                nft_creator_address: Some(creator_addr),
+                nft_tags: tags,
             };
 
             record_interaction(&self.pool, interaction).await?;
 
             info!(
-                "💰 Processed content purchase: {} bought copy of {}",
-                buyer, original_id
+                "💰 Processed content purchase: {} bought copy of {} (uuid={})",
+                buyer, original_id, nft_uuid
             );
         }
         Ok(())
@@ -323,11 +409,21 @@ impl EventProcessor {
             let token_id = data.get("tokenId").and_then(|v| v.as_str()).unwrap_or("");
             let creator = data.get("creator").and_then(|v| v.as_str()).unwrap_or("");
 
-            // Generate UUID for the NFT
-            let nft_uuid = Self::generate_nft_uuid(&event.contract_address, token_id);
+            // Look up actual NFT UUID from database
+            let nft_uuid = match self.lookup_nft_uuid(&event.contract_address, token_id).await? {
+                Some(id) => id,
+                None => {
+                    warn!("NFT not found for like: contract={}, token_id={}", event.contract_address, token_id);
+                    return Ok(());
+                }
+            };
 
-            // Determine if this is a like (increment) or unlike (decrement)
-            let _is_like = interaction_type == InteractionType::Like;
+            // Look up NFT metadata for enriched interaction
+            let metadata = self.lookup_nft_metadata(&nft_uuid).await?;
+            let (contract_type, creator_addr, tags) = match metadata {
+                Some(m) => (m.contract_type, m.creator_address, m.tags),
+                None => (event.contract_type.clone(), creator.to_string(), vec![]),
+            };
 
             let interaction = InteractionEvent {
                 user_address: liker.to_string(),
@@ -335,18 +431,16 @@ impl EventProcessor {
                 interaction_type,
                 view_duration_ms: None,
                 source: Some("feed".to_string()),
-                nft_contract_type: Some(event.contract_type.clone()),
-                nft_creator_address: Some(creator.to_string()),
-                nft_tags: vec![], // TODO: Look up from NFT features
+                nft_contract_type: Some(contract_type),
+                nft_creator_address: Some(creator_addr),
+                nft_tags: tags,
             };
 
             record_interaction(&self.pool, interaction).await?;
 
-            // self.update_nft_likes_count(&event.contract_address, token_id, is_like).await?;
-
             info!(
-                "👍 Processed {}: {} on {}",
-                event.event_type, liker, token_id
+                "👍 Processed {}: {} on {} (uuid={})",
+                event.event_type, liker, token_id, nft_uuid
             );
         }
         Ok(())
@@ -358,8 +452,21 @@ impl EventProcessor {
             let token_id = data.get("tokenId").and_then(|v| v.as_str()).unwrap_or("");
             let _comment = data.get("comment").and_then(|v| v.as_str()).unwrap_or("");
 
-            // Generate UUID for the NFT
-            let nft_uuid = Self::generate_nft_uuid(&event.contract_address, token_id);
+            // Look up actual NFT UUID from database
+            let nft_uuid = match self.lookup_nft_uuid(&event.contract_address, token_id).await? {
+                Some(id) => id,
+                None => {
+                    warn!("NFT not found for comment: contract={}, token_id={}", event.contract_address, token_id);
+                    return Ok(());
+                }
+            };
+
+            // Look up NFT metadata
+            let metadata = self.lookup_nft_metadata(&nft_uuid).await?;
+            let (contract_type, creator_addr, tags) = match metadata {
+                Some(m) => (m.contract_type, m.creator_address, m.tags),
+                None => (event.contract_type.clone(), String::new(), vec![]),
+            };
 
             let interaction = InteractionEvent {
                 user_address: commenter.to_string(),
@@ -367,16 +474,14 @@ impl EventProcessor {
                 interaction_type: InteractionType::Comment,
                 view_duration_ms: None,
                 source: Some("feed".to_string()),
-                nft_contract_type: Some(event.contract_type.clone()),
-                nft_creator_address: None,
-                nft_tags: vec![],
+                nft_contract_type: Some(contract_type),
+                nft_creator_address: Some(creator_addr),
+                nft_tags: tags,
             };
 
             record_interaction(&self.pool, interaction).await?;
 
-            // self.update_nft_comments_count(&event.contract_address, token_id, true).await?;
-
-            info!("💬 Processed comment: {} on {}", commenter, token_id);
+            info!("💬 Processed comment: {} on {} (uuid={})", commenter, token_id, nft_uuid);
         }
         Ok(())
     }
@@ -390,13 +495,26 @@ impl EventProcessor {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            // Generate UUID for the NFT
-            let nft_uuid = Self::generate_nft_uuid(&event.contract_address, token_id);
+            // Look up actual NFT UUID from database
+            let nft_uuid = match self.lookup_nft_uuid(&event.contract_address, token_id).await? {
+                Some(id) => id,
+                None => {
+                    warn!("NFT not found for bookmark: contract={}, token_id={}", event.contract_address, token_id);
+                    return Ok(());
+                }
+            };
 
             let interaction_type = if bookmarked {
                 InteractionType::Save
             } else {
                 InteractionType::Unsave
+            };
+
+            // Look up NFT metadata
+            let metadata = self.lookup_nft_metadata(&nft_uuid).await?;
+            let (contract_type, creator_addr, tags) = match metadata {
+                Some(m) => (m.contract_type, m.creator_address, m.tags),
+                None => (event.contract_type.clone(), String::new(), vec![]),
             };
 
             let interaction = InteractionEvent {
@@ -405,18 +523,19 @@ impl EventProcessor {
                 interaction_type,
                 view_duration_ms: None,
                 source: Some("feed".to_string()),
-                nft_contract_type: Some(event.contract_type.clone()),
-                nft_creator_address: None,
-                nft_tags: vec![],
+                nft_contract_type: Some(contract_type),
+                nft_creator_address: Some(creator_addr),
+                nft_tags: tags,
             };
 
             record_interaction(&self.pool, interaction).await?;
 
             info!(
-                "🔖 Processed bookmark: {} {} {}",
+                "🔖 Processed bookmark: {} {} {} (uuid={})",
                 user,
                 if bookmarked { "saved" } else { "unsaved" },
-                token_id
+                token_id,
+                nft_uuid
             );
         }
         Ok(())
@@ -427,8 +546,21 @@ impl EventProcessor {
             let sharer = data.get("sharer").and_then(|v| v.as_str()).unwrap_or("");
             let token_id = data.get("tokenId").and_then(|v| v.as_str()).unwrap_or("");
 
-            // Generate UUID for the NFT
-            let nft_uuid = Self::generate_nft_uuid(&event.contract_address, token_id);
+            // Look up actual NFT UUID from database
+            let nft_uuid = match self.lookup_nft_uuid(&event.contract_address, token_id).await? {
+                Some(id) => id,
+                None => {
+                    warn!("NFT not found for share: contract={}, token_id={}", event.contract_address, token_id);
+                    return Ok(());
+                }
+            };
+
+            // Look up NFT metadata
+            let metadata = self.lookup_nft_metadata(&nft_uuid).await?;
+            let (contract_type, creator_addr, tags) = match metadata {
+                Some(m) => (m.contract_type, m.creator_address, m.tags),
+                None => (event.contract_type.clone(), String::new(), vec![]),
+            };
 
             let interaction = InteractionEvent {
                 user_address: sharer.to_string(),
@@ -436,14 +568,14 @@ impl EventProcessor {
                 interaction_type: InteractionType::Share,
                 view_duration_ms: None,
                 source: Some("feed".to_string()),
-                nft_contract_type: Some(event.contract_type.clone()),
-                nft_creator_address: None,
-                nft_tags: vec![],
+                nft_contract_type: Some(contract_type),
+                nft_creator_address: Some(creator_addr),
+                nft_tags: tags,
             };
 
             record_interaction(&self.pool, interaction).await?;
 
-            info!("📤 Processed share: {} shared {}", sharer, token_id);
+            info!("📤 Processed share: {} shared {} (uuid={})", sharer, token_id, nft_uuid);
         }
         Ok(())
     }
