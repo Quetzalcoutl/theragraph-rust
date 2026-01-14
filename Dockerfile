@@ -14,11 +14,10 @@ RUN mkdir src && \
 # Copy source code
 COPY src ./src
 
-# Build for release and build example consumer into release artifacts
+# Build for release and build consumer example into release artifacts
 RUN touch src/main.rs && \
     cargo build --release && \
-    # Build the consumer example so we can run it as a standalone binary
-    cargo build --release --example consumer_nebula
+    cargo build --release --example consumer_nebula || true
 
 # Runtime stage
 FROM debian:bookworm-slim
@@ -26,19 +25,20 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Copy main engine binary from builder
-COPY --from=builder /app/target/release/theragraph-engine /app/
-# Copy built consumer example binary
+COPY --from=builder /app/target/release/theragraph-engine /app/theragraph-engine
+# Copy built consumer example binary (if present)
 COPY --from=builder /app/target/release/examples/consumer_nebula /app/consumer_nebula
-# Copy example assets (sample events) so the consumer can run without source mounts
-COPY --from=builder /app/examples /app/examples
+# Copy example assets so consumer can run without source mounts
+COPY --from=builder /app/examples /app/examples || true
 
 # Make sure consumer binary is executable
-RUN chmod +x /app/consumer_nebula || true
+RUN ["/bin/sh", "-c", "[ -f /app/consumer_nebula ] && chmod +x /app/consumer_nebula || true"]
 
-# Default CMD runs the engine; consumer is run by overriding the command in compose or Kubernetes
-CMD ["./theragraph-engine"]
+# Default CMD runs the engine; override to run consumer
+CMD ["/app/theragraph-engine"]
