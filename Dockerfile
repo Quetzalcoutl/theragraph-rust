@@ -35,7 +35,8 @@ COPY --from=builder /app/target/release/theragraph-engine /app/theragraph-engine
 # Copy built consumer example binary (if present)
 COPY --from=builder /app/target/release/examples/consumer_nebula /app/consumer_nebula
 # Copy example assets so consumer can run without source mounts
-COPY --from=builder /app/examples /app/examples || true
+# Ensure we copy the directory (trailing slashes) and remove the invalid shell `|| true` suffix
+COPY --from=builder /app/examples/ /app/examples/
 
 # Make sure consumer binary is executable
 RUN ["/bin/sh", "-c", "[ -f /app/consumer_nebula ] && chmod +x /app/consumer_nebula || true"]
