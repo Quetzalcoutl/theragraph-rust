@@ -63,6 +63,6 @@ COPY --from=builder /app/examples/ /app/examples/
 # Make sure consumer binary is executable
 RUN ["/bin/sh", "-c", "[ -f /app/consumer_nebula ] && chmod +x /app/consumer_nebula || true"]
 
-# Entrypoint will wait for internal Kafka before starting the engine
-ENTRYPOINT ["/app/wait-for-kafka.sh", "kafka:29092", "20", "2"]
+# Entrypoint will wait for Kafka before starting the engine; it will use KAFKA_BROKERS env (or default kafka:29092)
+ENTRYPOINT ["/app/wait-for-kafka.sh"]
 CMD ["/app/theragraph-engine"]
