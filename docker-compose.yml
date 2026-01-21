@@ -13,6 +13,8 @@ services:
     volumes:
       - zookeeper-data:/var/lib/zookeeper/data
       - zookeeper-logs:/var/lib/zookeeper/log
+    networks:
+      - theragraph-net
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
@@ -42,6 +44,8 @@ services:
       KAFKA_SOCKET_REQUEST_MAX_BYTES: 20971520
     volumes:
       - kafka-data:/var/lib/kafka/data
+    networks:
+      - theragraph-net
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -54,6 +58,8 @@ services:
       KAFKA_CLUSTERS_0_NAME: theragraph
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
       KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    networks:
+      - theragraph-net
 
   postgres:
     image: postgres:17-alpine
@@ -66,9 +72,15 @@ services:
       - postgres-data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    networks:
+      - theragraph-net
 
 volumes:
   zookeeper-data:
   zookeeper-logs:
   kafka-data:
   postgres-data:
+
+networks:
+  theragraph-net:
+    external: true
