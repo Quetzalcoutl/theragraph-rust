@@ -73,9 +73,15 @@ ENV KAFKA_BROKERS=kafka:29092
 # API port (configurable) — keep in sync with compose / platform routing
 ENV API_PORT=8081
 
-# Expose API port and add container-level healthcheck
+# Expose API port and use a scripted healthcheck (longer start-period to allow app init)
 EXPOSE ${API_PORT}
-HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 CMD curl -f http://127.0.0.1:${API_PORT}/health || exit 1
+
+# Copy and make healthcheck script executable
+COPY scripts/healthcheck.sh /app/healthcheck.sh
+RUN chmod +x /app/healthcheck.sh
+
+# Use the scripted healthcheck; increase start-period so the app can bind and be ready
+HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=5 CMD /app/healthcheck.sh
 
 # Entrypoint will start the Kafka waiter in background so the app can start and serve health checks
 # Use shell form to pass env and then exec CMD safely so CMD is not passed as an arg to the wait script
