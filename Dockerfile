@@ -48,6 +48,10 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
+# Copy wait script and make it executable
+COPY scripts/wait-for-kafka.sh /app/wait-for-kafka.sh
+RUN chmod +x /app/wait-for-kafka.sh
+
 # Copy main engine binary from builder
 COPY --from=builder /app/target/release/theragraph-engine /app/theragraph-engine
 # Copy built consumer example binary (if present)
@@ -59,5 +63,6 @@ COPY --from=builder /app/examples/ /app/examples/
 # Make sure consumer binary is executable
 RUN ["/bin/sh", "-c", "[ -f /app/consumer_nebula ] && chmod +x /app/consumer_nebula || true"]
 
-# Default CMD runs the engine; override to run consumer
+# Entrypoint will wait for internal Kafka before starting the engine
+ENTRYPOINT ["/app/wait-for-kafka.sh", "kafka:29092", "20", "2"]
 CMD ["/app/theragraph-engine"]

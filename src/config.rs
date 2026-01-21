@@ -379,7 +379,7 @@ impl KafkaConfig {
         let enabled = get_env_or("KAFKA_ENABLED", "true").parse().unwrap_or(true);
 
         Ok(Self {
-            brokers: get_env_or("KAFKA_BROKERS", "localhost:9092"),
+            brokers: get_env_or("KAFKA_BROKERS", "kafka:29092"),
             group_id: get_env_or("KAFKA_GROUP_ID", "theragraph-engine"),
             enabled,
             topics: KafkaTopics {
