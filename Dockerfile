@@ -4,6 +4,8 @@ WORKDIR /app
 
 # Copy manifests
 COPY Cargo.toml Cargo.lock ./
+# Ensure SQLx migrations are available at build-time for `sqlx::migrate!` macro
+COPY migrations/ ./migrations/
 
 # Create dummy main to cache dependencies
 RUN apt-get update && apt-get install -y \
