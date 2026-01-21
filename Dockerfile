@@ -77,7 +77,7 @@ ENV API_PORT=8081
 EXPOSE ${API_PORT}
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 CMD curl -f http://127.0.0.1:${API_PORT}/health || exit 1
 
-# Entrypoint will wait for Kafka before starting the engine; it will use KAFKA_BROKERS env (or overridden)
+# Entrypoint will start the Kafka waiter in background so the app can start and serve health checks
 # Use shell form to pass env and then exec CMD safely so CMD is not passed as an arg to the wait script
-ENTRYPOINT ["sh","-c","/app/wait-for-kafka.sh \"${KAFKA_BROKERS:-}\" && exec \"$@\"" ]
+ENTRYPOINT ["sh","-c","/app/wait-for-kafka.sh \"${KAFKA_BROKERS:-}\" & exec \"$@\"" ]
 CMD ["/app/theragraph-engine"]
