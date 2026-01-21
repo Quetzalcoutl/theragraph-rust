@@ -103,6 +103,10 @@ pub struct KafkaProducerConfig {
     pub retries: u32,
     /// Optional librdkafka debug categories
     pub rdkafka_debug: Option<String>,
+    /// Number of local send attempts before giving up
+    pub send_max_attempts: u32,
+    /// Base backoff in ms for send retries (exponential)
+    pub send_backoff_base_ms: u64,
 }
 
 /// Database configuration
@@ -421,6 +425,8 @@ impl KafkaConfig {
                     let s = get_env_or("KAFKA_RDKAFKA_DEBUG", "");
                     if s.is_empty() { None } else { Some(s) }
                 },
+                send_max_attempts: get_env_or("KAFKA_SEND_MAX_ATTEMPTS", "5").parse().unwrap_or(5),
+                send_backoff_base_ms: get_env_or("KAFKA_SEND_BACKOFF_BASE_MS", "200").parse().unwrap_or(200),
             },
         })
     }

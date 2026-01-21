@@ -26,6 +26,9 @@ pub struct KafkaProducer {
     enabled: bool,
     /// How long we'll wait for a send to complete before timing out
     delivery_timeout: Duration,
+    /// send retry behavior
+    send_max_attempts: u32,
+    send_backoff_base_ms: u64,
 }
 
 /// Producer metrics
@@ -46,6 +49,15 @@ impl KafkaProducerMetrics {
 }
 
 impl KafkaProducer {
+    /// Helper to access send retries from config
+    fn config_send_max_attempts(&self) -> u32 {
+        self.send_max_attempts
+    }
+
+    fn config_send_backoff_base_ms(&self) -> u64 {
+        self.send_backoff_base_ms
+    }
+
     /// Create a new Kafka producer from configuration
     pub fn new(config: &KafkaConfig) -> Result<Self> {
         if !config.enabled {
@@ -116,6 +128,8 @@ impl KafkaProducer {
             config: Arc::new(KafkaProducerMetrics::new()),
             enabled: true,
             delivery_timeout: config.producer.delivery_timeout,
+            send_max_attempts: config.producer.send_max_attempts,
+            send_backoff_base_ms: config.producer.send_backoff_base_ms,
         })
     }
 
@@ -129,7 +143,11 @@ impl KafkaProducer {
                     .expect("Failed to create dummy producer"),
             ),
             config: Arc::new(KafkaProducerMetrics::new()),
-            enabled: false,            delivery_timeout: Duration::from_secs(5),        }
+            enabled: false,
+            delivery_timeout: Duration::from_secs(5),
+            send_max_attempts: 1,
+            send_backoff_base_ms: 200,
+        }
     }
 
     /// Create producer from broker string (legacy compatibility)
@@ -156,6 +174,8 @@ impl KafkaProducer {
                 reconnect_backoff_max_ms: 10000,
                 retries: 2147483647u32,
                 rdkafka_debug: None,
+                send_max_attempts: 5,
+                send_backoff_base_ms: 200,
             },
         };
         Self::new(&config)
@@ -179,33 +199,68 @@ impl KafkaProducer {
 
         debug!("Sending event to topic '{}' with key '{}'", topic, key);
 
-        let record = FutureRecord::to(topic).key(key).payload(&payload);
+        // Local retry loop with exponential backoff + jitter to handle transient broker/connectivity issues
+        let max_attempts = self.config_send_max_attempts();
+        let base_backoff = self.config_send_backoff_base_ms();
 
-        match self
-            .producer
-            .send(record, Timeout::After(self.delivery_timeout))
-            .await
-        {
-            Ok((partition, offset)) => {
-                debug!(
-                    "Message delivered to partition {} at offset {}",
-                    partition, offset
-                );
-                self.config.messages_sent.fetch_add(1, Ordering::Relaxed);
-                self.config
-                    .bytes_sent
-                    .fetch_add(payload_len as u64, Ordering::Relaxed);
-                Ok(())
-            }
-            Err((err, _)) => {
-                self.config.messages_failed.fetch_add(1, Ordering::Relaxed);
-                error!("Failed to deliver message: {:?}", err);
-                Err(Error::Kafka {
-                    message: format!("Failed to send message: {}", err).into(),
-                    source: Some(err),
-                })
+        for attempt in 1..=max_attempts {
+            let record = FutureRecord::to(topic).key(key).payload(payload.as_str());
+            match self
+                .producer
+                .send(record, Timeout::After(self.delivery_timeout))
+                .await
+            {
+                Ok((partition, offset)) => {
+                    debug!(
+                        "Message delivered to partition {} at offset {} (attempt {}/{})",
+                        partition,
+                        offset,
+                        attempt,
+                        max_attempts
+                    );
+                    self.config.messages_sent.fetch_add(1, Ordering::Relaxed);
+                    self.config
+                        .bytes_sent
+                        .fetch_add(payload_len as u64, Ordering::Relaxed);
+                    return Ok(());
+                }
+                Err((err, _)) => {
+                    self.config.messages_failed.fetch_add(1, Ordering::Relaxed);
+                    error!("Attempt {}/{} - Failed to deliver message: {:?}", attempt, max_attempts, err);
+
+                    // On terminal failure, return the error
+                    if attempt == max_attempts {
+                        // On final failure, fetch broker metadata for diagnostics and log it
+                        match self.producer.client().fetch_metadata(None, Timeout::After(Duration::from_secs(5))) {
+                            Ok(md) => {
+                                let brokers: Vec<String> = md.brokers().iter().map(|b| format!("{}:{}", b.host(), b.port())).collect();
+                                error!("Broker metadata on failure: brokers={:?}, topics_count={}", brokers, md.topics().len());
+                            }
+                            Err(merr) => {
+                                error!("Failed to fetch broker metadata: {:?}", merr);
+                            }
+                        }
+
+                        return Err(Error::Kafka {
+                            message: format!("Failed to send message after {} attempts: {}", max_attempts, err).into(),
+                            source: Some(err),
+                        });
+                    }
+
+                    // Exponential backoff with jitter
+                    let exp = 2u64.pow((attempt - 1) as u32);
+                    let mut backoff = base_backoff.saturating_mul(exp);
+                    // add up to 100ms of jitter
+                    let jitter = rand::random::<u64>() % 100;
+                    backoff = backoff.saturating_add(jitter);
+                    debug!("Backing off for {}ms before retrying (attempt {}/{})", backoff, attempt, max_attempts);
+                    tokio::time::sleep(Duration::from_millis(backoff)).await;
+                    // retry
+                }
             }
         }
+
+        unreachable!("send_event retry loop should return above")
     }
 
     /// Send multiple events in a batch
