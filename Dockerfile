@@ -44,6 +44,7 @@ RUN apt-get update && apt-get install -y \
     libssl3 \
     libsasl2-2 \
     procps \
+    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
