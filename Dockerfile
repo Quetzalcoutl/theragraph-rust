@@ -81,7 +81,8 @@ COPY scripts/healthcheck.sh /app/healthcheck.sh
 RUN chmod +x /app/healthcheck.sh
 
 # Use the scripted healthcheck; increase start-period so the app can bind and be ready
-HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=5 CMD /app/healthcheck.sh
+# Make start period generous and allow more retries to avoid false negatives during startup
+HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=10 CMD /app/healthcheck.sh
 
 # Entrypoint will start the Kafka waiter in background so the app can start and serve health checks
 # Use shell form to pass env and then exec CMD safely so CMD is not passed as an arg to the wait script
