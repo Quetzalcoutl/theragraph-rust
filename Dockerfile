@@ -65,10 +65,19 @@ COPY --from=builder /app/target/release/examples/consumer_nebula /app/consumer_n
 # Ensure we copy the directory (trailing slashes) and remove the invalid shell `|| true` suffix
 COPY --from=builder /app/examples/ /app/examples/
 
-# Make sure consumer binary is executable
-RUN ["/bin/sh", "-c", "[ -f /app/consumer_nebula ] && chmod +x /app/consumer_nebula || true"]
+# Make sure consumer and engine binaries are executable
+RUN ["/bin/sh", "-c", "[ -f /app/consumer_nebula ] && chmod +x /app/consumer_nebula || true; [ -f /app/theragraph-engine ] && chmod +x /app/theragraph-engine || true"]
 
-# Entrypoint will wait for Kafka before starting the engine; it will use KAFKA_BROKERS env (or default kafka:29092)
+# Default Kafka bootstrap when running in the same Docker network as Kafka service
+ENV KAFKA_BROKERS=kafka:29092
+# API port (configurable) — keep in sync with compose / platform routing
+ENV API_PORT=8081
+
+# Expose API port and add container-level healthcheck
+EXPOSE ${API_PORT}
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 CMD curl -f http://127.0.0.1:${API_PORT}/health || exit 1
+
+# Entrypoint will wait for Kafka before starting the engine; it will use KAFKA_BROKERS env (or overridden)
 # Use shell form to pass env and then exec CMD safely so CMD is not passed as an arg to the wait script
 ENTRYPOINT ["sh","-c","/app/wait-for-kafka.sh \"${KAFKA_BROKERS:-}\" && exec \"$@\"" ]
 CMD ["/app/theragraph-engine"]
