@@ -6,7 +6,8 @@
 //!
 //! # Example
 //! ```no_run
-//! let config = Config::from_env()?;
+//! use theragraph::Config;
+//! let config = Config::from_env().expect("failed to load config");
 //! println!("RPC URL: {}", config.blockchain.rpc_url);
 //! ```
 
