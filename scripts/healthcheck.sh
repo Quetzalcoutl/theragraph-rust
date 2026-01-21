@@ -3,52 +3,61 @@ set -eo pipefail
 
 API_PORT=${API_PORT:-8081}
 DEBUG=${DEBUG_HEALTHCHECK:-false}
+LOGFILE=${HEALTHCHECK_LOG:-/tmp/healthcheck.log}
 
 URL="http://127.0.0.1:${API_PORT}/health"
 
-# Ensure curl exists
-if ! command -v curl >/dev/null 2>&1; then
-  echo "healthcheck: curl not found"
-  # If debugging enabled, print some diagnostics anyway
-  if [ "$DEBUG" = "true" ]; then
-    echo "healthcheck: DEBUG=true — printing diagnostics despite missing curl"
-    echo "--- date ---"; date
-    echo "--- ps aux ---"; ps aux || true
-    echo "--- ls -la /app ---"; ls -la /app || true
+# Always append timestamped header to logfile for visibility
+echo "---- healthcheck run at: $(date -u +"%Y-%m-%dT%H:%M:%SZ") ----" >> "$LOGFILE" || true
+echo "API_PORT=${API_PORT} DEBUG=${DEBUG}" >> "$LOGFILE" || true
+
+echo "healthcheck: checking ${URL}" | tee -a "$LOGFILE"
+
+# Prefer explicit curl path to avoid PATH issues
+CURL_BIN="/usr/bin/curl"
+if [ ! -x "$CURL_BIN" ]; then
+  if command -v curl >/dev/null 2>&1; then
+    CURL_BIN="$(command -v curl)"
+  else
+    echo "healthcheck: curl not found at /usr/bin/curl or in PATH" | tee -a "$LOGFILE"
+    if [ "$DEBUG" = "true" ]; then
+      echo "--- DEBUG DIAGNOSTICS ---" | tee -a "$LOGFILE"
+      echo "--- date ---" | tee -a "$LOGFILE"; date | tee -a "$LOGFILE"
+      echo "--- ps aux ---" | tee -a "$LOGFILE"; ps aux | tee -a "$LOGFILE" || true
+      echo "--- ls -la /app ---" | tee -a "$LOGFILE"; ls -la /app | tee -a "$LOGFILE" || true
+    fi
+    exit 1
   fi
-  exit 1
 fi
 
-# Verbose diagnostics when DEBUG_HEALTHCHECK=true
 if [ "$DEBUG" = "true" ]; then
-  echo "healthcheck (debug): starting diagnostics"
-  echo "--- date ---"; date
-  echo "--- environment ---"; env | sort
-  echo "--- process list ---"; ps aux || true
-  echo "--- listening ports (ss/netstat) ---"
-  if command -v ss >/dev/null 2>&1; then ss -ltnp || true
-  elif command -v netstat >/dev/null 2>&1; then netstat -ltnp || true
-  else echo "no ss/netstat available"; fi
-  echo "--- /app contents ---"; ls -la /app || true
-  echo "--- last 200 lines of any /app/*.log ---"; for f in /app/*.log; do [ -f "$f" ] && echo "--- $f ---" && tail -n 200 "$f"; done || true
+  echo "healthcheck (debug): using curl=${CURL_BIN}" | tee -a "$LOGFILE"
+  echo "--- environment ---" | tee -a "$LOGFILE"; env | sort | tee -a "$LOGFILE"
+  echo "--- listening ports (ss/netstat) ---" | tee -a "$LOGFILE"
+  if command -v ss >/dev/null 2>&1; then ss -ltnp | tee -a "$LOGFILE" || true
+  elif command -v netstat >/dev/null 2>&1; then netstat -ltnp | tee -a "$LOGFILE" || true
+  else echo "no ss/netstat available" | tee -a "$LOGFILE"; fi
+  echo "--- /app contents ---" | tee -a "$LOGFILE"; ls -la /app | tee -a "$LOGFILE" || true
 fi
 
-echo "healthcheck: checking ${URL}"
-
-# Use verbose curl when debugging to capture response
+# Use verbose curl when debugging to capture response and write to logfile
 if [ "$DEBUG" = "true" ]; then
-  curl -v --max-time 5 "$URL" || {
-    echo "healthcheck: curl failed"
+  "$CURL_BIN" -v --max-time 5 "$URL" 2>&1 | tee -a "$LOGFILE" || {
+    echo "healthcheck: curl failed" | tee -a "$LOGFILE"
     exit 1
   }
-  echo "healthcheck: ok"
+  echo "healthcheck: ok" | tee -a "$LOGFILE"
   exit 0
 else
-  if curl -fsS --max-time 2 "$URL" >/dev/null; then
-    echo "healthcheck: ok"
+  if "$CURL_BIN" -fsS --max-time 2 "$URL" >/dev/null 2>&1; then
+    echo "healthcheck: ok" | tee -a "$LOGFILE"
     exit 0
   else
-    echo "healthcheck: failed to reach ${URL}"
+    echo "healthcheck: failed to reach ${URL}" | tee -a "$LOGFILE"
+    # Dump a few diagnostics to logfile for later inspection
+    echo "--- quick diag ---" >> "$LOGFILE" || true
+    ps aux >> "$LOGFILE" || true
+    if command -v ss >/dev/null 2>&1; then ss -ltnp >> "$LOGFILE" || true; fi
     exit 1
   fi
 fi
