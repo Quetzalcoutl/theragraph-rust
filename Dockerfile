@@ -45,6 +45,10 @@ RUN apt-get update && apt-get install -y \
     libsasl2-2 \
     procps \
     netcat-openbsd \
+    iproute2 \
+    iputils-ping \
+    dnsutils \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
