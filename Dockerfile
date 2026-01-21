@@ -1,4 +1,4 @@
-FROM rust:1.75 as builder
+FROM rust:1.80 AS builder
 
 WORKDIR /app
 
@@ -20,7 +20,7 @@ RUN touch src/main.rs && \
     cargo build --release --example consumer_nebula || true
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
