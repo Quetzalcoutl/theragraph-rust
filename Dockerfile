@@ -24,7 +24,13 @@ COPY src ./src
 # Build for release and build consumer example into release artifacts
 RUN touch src/main.rs && \
     cargo build --release && \
-    cargo build --release --example consumer_nebula || true
+    # Only attempt to build the example if the examples directory exists (prevents build failures when examples are absent)
+    if [ -d examples ]; then \
+      cargo build --release --example consumer_nebula || true; \
+    fi && \
+    # Ensure target/example and examples directories exist so runtime COPYs don't fail
+    mkdir -p /app/target/release/examples /app/examples && \
+    [ -f /app/target/release/examples/consumer_nebula ] || touch /app/target/release/examples/consumer_nebula
 
 # Runtime stage
 FROM debian:bookworm-slim AS runtime
