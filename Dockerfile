@@ -17,6 +17,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/* && \
     mkdir src && \
     echo "fn main() {}" > src/main.rs && \
+    # Also add a minimal lib placeholder so Cargo can resolve a [lib] target during dependency caching
+    echo "pub fn __dummy_lib() {}" > src/lib.rs && \
     cargo build --release && \
     rm -rf src
 
