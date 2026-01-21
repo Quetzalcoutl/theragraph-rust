@@ -80,6 +80,8 @@ pub struct KafkaTopics {
 pub struct KafkaProducerConfig {
     /// Message timeout
     pub message_timeout: Duration,
+    /// Delivery timeout (how long a single produce call waits for delivery)
+    pub delivery_timeout: Duration,
     /// Maximum message size in bytes
     pub max_message_bytes: usize,
     /// Batch size for producer
@@ -92,6 +94,14 @@ pub struct KafkaProducerConfig {
     pub acks: String,
     /// Enable idempotent producer
     pub idempotent: bool,
+    /// Reconnect backoff in ms
+    pub reconnect_backoff_ms: u64,
+    /// Reconnect backoff max in ms
+    pub reconnect_backoff_max_ms: u64,
+    /// Retries (if not using infinite retries)
+    pub retries: u32,
+    /// Optional librdkafka debug categories
+    pub rdkafka_debug: Option<String>,
 }
 
 /// Database configuration
@@ -378,6 +388,11 @@ impl KafkaConfig {
                         .parse()
                         .unwrap_or(5000),
                 ),
+                delivery_timeout: Duration::from_millis(
+                    get_env_or("KAFKA_DELIVERY_TIMEOUT_MS", "120000")
+                        .parse()
+                        .unwrap_or(120000),
+                ),
                 max_message_bytes: get_env_or("KAFKA_MAX_MESSAGE_BYTES", "20971520")
                     .parse()
                     .unwrap_or(20 * 1024 * 1024),
@@ -392,6 +407,19 @@ impl KafkaConfig {
                 idempotent: get_env_or("KAFKA_IDEMPOTENT", "true")
                     .parse()
                     .unwrap_or(true),
+                reconnect_backoff_ms: get_env_or("KAFKA_RECONNECT_BACKOFF_MS", "1000")
+                    .parse()
+                    .unwrap_or(1000),
+                reconnect_backoff_max_ms: get_env_or("KAFKA_RECONNECT_BACKOFF_MAX_MS", "10000")
+                    .parse()
+                    .unwrap_or(10000),
+                retries: get_env_or("KAFKA_CLIENT_RETRIES", "2147483647")
+                    .parse()
+                    .unwrap_or(2147483647u32),
+                rdkafka_debug: {
+                    let s = get_env_or("KAFKA_RDKAFKA_DEBUG", "");
+                    if s.is_empty() { None } else { Some(s) }
+                },
             },
         })
     }

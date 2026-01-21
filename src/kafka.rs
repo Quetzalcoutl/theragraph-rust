@@ -24,6 +24,8 @@ pub struct KafkaProducer {
     producer: Arc<FutureProducer>,
     config: Arc<KafkaProducerMetrics>,
     enabled: bool,
+    /// How long we'll wait for a send to complete before timing out
+    delivery_timeout: Duration,
 }
 
 /// Producer metrics
@@ -54,16 +56,24 @@ impl KafkaProducer {
         info!("Creating Kafka producer...");
         debug!("Kafka brokers: {}", config.brokers);
 
-        let producer: FutureProducer = ClientConfig::new()
-            // Connection
-            .set("bootstrap.servers", &config.brokers)
+        // Build client config with additional resilience settings
+        let mut cfg = ClientConfig::new();
+        cfg.set("bootstrap.servers", &config.brokers)
             .set("client.id", "theragraph-engine")
             // Reliability
             .set("acks", &config.producer.acks)
             .set("enable.idempotence", config.producer.idempotent.to_string())
             .set("max.in.flight.requests.per.connection", "5")
-            .set("retries", "2147483647") // Infinite retries with idempotence
+            .set("retries", &config.producer.retries.to_string())
             .set("retry.backoff.ms", "100")
+            .set(
+                "reconnect.backoff.ms",
+                &config.producer.reconnect_backoff_ms.to_string(),
+            )
+            .set(
+                "reconnect.backoff.max.ms",
+                &config.producer.reconnect_backoff_max_ms.to_string(),
+            )
             // Batching
             .set("batch.size", config.producer.batch_size.to_string())
             .set("linger.ms", config.producer.linger.as_millis().to_string())
@@ -74,6 +84,10 @@ impl KafkaProducer {
                 "message.timeout.ms",
                 config.producer.message_timeout.as_millis().to_string(),
             )
+            .set(
+                "delivery.timeout.ms",
+                config.producer.delivery_timeout.as_millis().to_string(),
+            )
             .set("request.timeout.ms", "30000")
             // Message size
             .set(
@@ -81,7 +95,14 @@ impl KafkaProducer {
                 config.producer.max_message_bytes.to_string(),
             )
             // Statistics (for metrics)
-            .set("statistics.interval.ms", "60000")
+            .set("statistics.interval.ms", "60000");
+
+        // Enable librdkafka debug categories if requested (useful for diagnosing transport failures)
+        if let Some(debug) = &config.producer.rdkafka_debug {
+            cfg.set("debug", debug);
+        }
+
+        let producer: FutureProducer = cfg
             .create()
             .map_err(|e| Error::Kafka {
                 message: format!("Failed to create producer: {}", e).into(),
@@ -94,6 +115,7 @@ impl KafkaProducer {
             producer: Arc::new(producer),
             config: Arc::new(KafkaProducerMetrics::new()),
             enabled: true,
+            delivery_timeout: config.producer.delivery_timeout,
         })
     }
 
@@ -107,8 +129,7 @@ impl KafkaProducer {
                     .expect("Failed to create dummy producer"),
             ),
             config: Arc::new(KafkaProducerMetrics::new()),
-            enabled: false,
-        }
+            enabled: false,            delivery_timeout: Duration::from_secs(5),        }
     }
 
     /// Create producer from broker string (legacy compatibility)
@@ -124,12 +145,17 @@ impl KafkaProducer {
             },
             producer: crate::config::KafkaProducerConfig {
                 message_timeout: Duration::from_secs(5),
+                delivery_timeout: Duration::from_secs(60),
                 max_message_bytes: 20 * 1024 * 1024,
                 batch_size: 16384,
                 linger: Duration::from_millis(5),
                 compression: "lz4".to_string(),
                 acks: "all".to_string(),
                 idempotent: true,
+                reconnect_backoff_ms: 1000,
+                reconnect_backoff_max_ms: 10000,
+                retries: 2147483647u32,
+                rdkafka_debug: None,
             },
         };
         Self::new(&config)
@@ -157,7 +183,7 @@ impl KafkaProducer {
 
         match self
             .producer
-            .send(record, Timeout::After(Duration::from_secs(5)))
+            .send(record, Timeout::After(self.delivery_timeout))
             .await
         {
             Ok((partition, offset)) => {
