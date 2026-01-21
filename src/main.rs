@@ -159,10 +159,20 @@ async fn main() -> Result<()> {
 
 /// Initialize structured logging with tracing
 fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        // Default log levels
-        EnvFilter::new("theragraph_engine=debug,tower_http=debug,sqlx=warn,rdkafka=warn,info")
-    });
+    // If KAFKA_RDKAFKA_DEBUG is set, enable more verbose rdkafka logs
+    let filter = match std::env::var("KAFKA_RDKAFKA_DEBUG") {
+        Ok(s) if !s.is_empty() => {
+            // Honor RUST_LOG if provided, else include rdkafka=debug
+            match std::env::var("RUST_LOG") {
+                Ok(r) if !r.is_empty() => EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&r)),
+                _ => EnvFilter::new("theragraph_engine=debug,tower_http=debug,sqlx=warn,rdkafka=debug,info"),
+            }
+        }
+        _ => EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            // Default log levels
+            EnvFilter::new("theragraph_engine=debug,tower_http=debug,sqlx=warn,rdkafka=warn,info")
+        }),
+    };
 
     tracing_subscriber::registry()
         .with(filter)
