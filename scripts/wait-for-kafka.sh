@@ -6,13 +6,17 @@ set -euo pipefail
 
 INPUT=${1:-}
 BROKERS_ENV=${KAFKA_BROKERS:-}
-if [ -n "$INPUT" ]; then
+# If first argument looks like a filesystem path or executable (starts with / or contains /), ignore it
+if [ -n "$INPUT" ] && [[ ! "$INPUT" =~ / ]]; then
   BROKER_LIST="$INPUT"
 elif [ -n "$BROKERS_ENV" ]; then
   BROKER_LIST="$BROKERS_ENV"
 else
   BROKER_LIST="kafka:29092"
 fi
+
+# Log the final broker list for diagnostics
+echo "Using broker list: $BROKER_LIST"
 
 RETRIES=${2:-60}
 DELAY=${3:-1}

@@ -65,5 +65,6 @@ COPY --from=builder /app/examples/ /app/examples/
 RUN ["/bin/sh", "-c", "[ -f /app/consumer_nebula ] && chmod +x /app/consumer_nebula || true"]
 
 # Entrypoint will wait for Kafka before starting the engine; it will use KAFKA_BROKERS env (or default kafka:29092)
-ENTRYPOINT ["/app/wait-for-kafka.sh"]
+# Use shell form to pass env and then exec CMD safely so CMD is not passed as an arg to the wait script
+ENTRYPOINT ["sh","-c","/app/wait-for-kafka.sh \"${KAFKA_BROKERS:-}\" && exec \"$@\"" ]
 CMD ["/app/theragraph-engine"]
