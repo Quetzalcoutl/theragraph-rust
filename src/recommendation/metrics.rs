@@ -119,8 +119,10 @@ impl QualityAnalyzer {
         }
         
         let creator_diversity = unique_creators as f32 / total_recommendations as f32;
-        let tag_diversity = (unique_tags as f32 / (total_recommendations as f32 * 3.0)).min(1.0);
-        
+        let tag_diversity_raw = (unique_tags as f32 / (total_recommendations as f32 * 3.0)).min(1.0);
+        // Scale tag diversity by creator diversity so tags contribute only when creator diversity is meaningful
+        let tag_diversity = tag_diversity_raw * creator_diversity;
+
         // Weighted average: creators matter more than tags
         creator_diversity * 0.7 + tag_diversity * 0.3
     }
