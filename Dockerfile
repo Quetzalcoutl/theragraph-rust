@@ -6,7 +6,14 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 
 # Create dummy main to cache dependencies
-RUN mkdir src && \
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    pkg-config \
+    libsasl2-dev \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/* && \
+    mkdir src && \
     echo "fn main() {}" > src/main.rs && \
     cargo build --release && \
     rm -rf src
@@ -25,6 +32,7 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
+    libsasl2-2 \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
