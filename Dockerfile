@@ -35,7 +35,7 @@ RUN touch src/main.rs && \
     [ -f /app/target/release/examples/consumer_nebula ] || touch /app/target/release/examples/consumer_nebula
 
 # Runtime stage
-FROM ubuntu:24.10 AS runtime
+FROM debian:trixie-slim AS runtime
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
