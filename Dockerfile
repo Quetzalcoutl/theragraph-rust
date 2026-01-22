@@ -2,7 +2,13 @@ FROM rustlang/rust:nightly AS builder
 
 WORKDIR /app
 
+# Ensure examples dir exists even if the build fails (prevents later COPY failures)
+RUN mkdir -p /app/examples
+
 ENV DEBIAN_FRONTEND=noninteractive
+ARG DATABASE_URL
+ENV SQLX_OFFLINE=1
+ENV CARGO_BUILD_JOBS=1
 
 # Copy manifests
 COPY Cargo.toml Cargo.lock ./
@@ -21,15 +27,28 @@ RUN apt-get update -qq && apt-get install -y -qq \
     echo "fn main() {}" > src/main.rs && \
     # Also add a minimal lib placeholder so Cargo can resolve a [lib] target during dependency caching
     echo "pub fn __dummy_lib() {}" > src/lib.rs && \
-    cargo build --release && \
+    cargo build --release -j 1 && \
     rm -rf src
 
 # Copy source code
 COPY src ./src
 
+# If a DATABASE_URL build-arg is supplied and sqlx-cli is available, attempt to prepare SQLx query cache.
+# Otherwise rely on committed sqlx-data.json and SQLX_OFFLINE=1
+RUN if [ -n "$DATABASE_URL" ]; then \
+      echo "DATABASE_URL provided; attempting cargo sqlx prepare if sqlx-cli is installed"; \
+      if command -v cargo-sqlx >/dev/null 2>&1; then \
+        export DATABASE_URL="$DATABASE_URL" && cargo sqlx prepare -- -q || echo "cargo sqlx prepare failed"; \
+      else \
+        echo "sqlx-cli not found (cargo-sqlx), skipping prepare"; \
+      fi; \
+    else \
+      echo "No DATABASE_URL build-arg; assuming sqlx-data.json is present and using SQLX_OFFLINE"; \
+    fi
+
 # Build for release and build consumer example into release artifacts
 RUN touch src/main.rs && \
-    cargo build --release && \
+    cargo build --release -j 1 && \
     # Only attempt to build the example if the examples directory exists (prevents build failures when examples are absent)
     if [ -d examples ]; then \
       cargo build --release --example consumer_nebula || true; \
