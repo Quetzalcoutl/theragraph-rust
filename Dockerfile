@@ -40,6 +40,7 @@ RUN touch src/main.rs && \
 FROM debian:trixie-slim AS runtime
 
 RUN apt-get update && apt-get install -y \
+    bash \
     ca-certificates \
     libssl3 \
     libsasl2-2 \
@@ -49,6 +50,7 @@ RUN apt-get update && apt-get install -y \
     iputils-ping \
     dnsutils \
     curl \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
