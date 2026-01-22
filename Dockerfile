@@ -71,6 +71,7 @@ COPY --from=builder /app/examples/ /app/examples/
 RUN ["/bin/sh", "-c", "[ -f /app/consumer_nebula ] && chmod +x /app/consumer_nebula || true; [ -f /app/theragraph-engine ] && chmod +x /app/theragraph-engine || true"]
 
 # Default Kafka bootstrap when running in the same Docker network as Kafka service
+# Supports file-based env via FFOLDER (each file name => env var name). Mount your secret folder and set FFOLDER to point to it.
 ENV KAFKA_BROKERS=kafka:29092
 # API port (configurable) — keep in sync with compose / platform routing
 ENV API_PORT=8081
