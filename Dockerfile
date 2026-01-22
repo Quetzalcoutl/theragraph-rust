@@ -83,11 +83,10 @@ EXPOSE ${API_PORT}
 COPY scripts/healthcheck.sh /app/healthcheck.sh
 RUN chmod +x /app/healthcheck.sh
 
-# Use the scripted healthcheck; increase start-period so the app can bind and be ready
+# Primary healthcheck: check that the API port is listening using `ss` (no curl dependency) and fall back to the scripted probe
 # Make start period generous and allow more retries to avoid false negatives during startup
-# Run healthcheck under bash and, on failure, print the logfile so Docker/Coolify capture diagnostics
 HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=10 \
-  CMD ["bash","-lc","/app/healthcheck.sh || (echo '--- healthcheck failed; /tmp/healthcheck.log ---' && cat /tmp/healthcheck.log)"]
+  CMD ["bash","-lc","if ss -ltn | grep -q \":${API_PORT}\b"; then echo 'healthcheck: port listening'; exit 0; else echo 'healthcheck: port not listening, running scripted probe and dumping diagnostics'; /app/healthcheck.sh || true; echo '--- ps ---'; ps aux; echo '--- ss -ltnp ---'; ss -ltnp 2>/dev/null || true; echo '--- /tmp/healthcheck.log ---'; cat /tmp/healthcheck.log 2>/dev/null || true; exit 1; fi"]
 
 # Entrypoint will start the Kafka waiter in background so the app can start and serve health checks
 # Use shell form to pass env and then exec CMD safely so CMD is not passed as an arg to the wait script
