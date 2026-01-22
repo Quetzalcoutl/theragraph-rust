@@ -277,21 +277,28 @@ impl Config {
         if let Ok(folder) = std::env::var("FFOLDER") {
             let p = std::path::Path::new(&folder);
             if p.is_dir() {
-                for entry in std::fs::read_dir(p).unwrap_or_default() {
-                    if let Ok(e) = entry {
-                        if let Ok(fname) = e.file_name().into_string() {
-                            let fpath = e.path();
-                            if fpath.is_file() {
-                                if let Ok(mut contents) = std::fs::read_to_string(&fpath) {
-                                    // Trim trailing newlines/spaces
-                                    contents = contents.trim().to_string();
-                                    // Only set env var if not already set in the environment
-                                    if std::env::var(&fname).is_err() {
-                                        std::env::set_var(&fname, contents);
+                match std::fs::read_dir(p) {
+                    Ok(entries) => {
+                        for entry in entries {
+                            if let Ok(e) = entry {
+                                if let Ok(fname) = e.file_name().into_string() {
+                                    let fpath = e.path();
+                                    if fpath.is_file() {
+                                        if let Ok(mut contents) = std::fs::read_to_string(&fpath) {
+                                            // Trim trailing newlines/spaces
+                                            contents = contents.trim().to_string();
+                                            // Only set env var if not already set in the environment
+                                            if std::env::var(&fname).is_err() {
+                                                std::env::set_var(&fname, contents);
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
+                    }
+                    Err(err) => {
+                        log::warn!("Failed to read FFOLDER {}: {}", folder, err);
                     }
                 }
                 log::info!("Loaded configuration from FFOLDER={}", folder);
