@@ -2,13 +2,15 @@ FROM rustlang/rust:nightly AS builder
 
 WORKDIR /app
 
+ENV DEBIAN_FRONTEND=noninteractive
+
 # Copy manifests
 COPY Cargo.toml Cargo.lock ./
 # Ensure SQLx migrations are available at build-time for `sqlx::migrate!` macro
 COPY migrations/ ./migrations/
 
 # Create dummy main to cache dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update -qq && apt-get install -y -qq \
     build-essential \
     cmake \
     pkg-config \
@@ -39,7 +41,9 @@ RUN touch src/main.rs && \
 # Runtime stage
 FROM debian:trixie-slim AS runtime
 
-RUN apt-get update && apt-get install -y \
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update -qq && apt-get install -y -qq \
     bash \
     ca-certificates \
     libssl3 \
