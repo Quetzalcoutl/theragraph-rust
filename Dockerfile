@@ -53,6 +53,9 @@ RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
+# Fail fast if curl is not available after install (fail build early and surface issue)
+RUN if ! command -v curl >/dev/null 2>&1; then echo "curl not found in runtime image" >&2; exit 1; fi
+
 WORKDIR /app
 
 # Copy wait script and make it executable
