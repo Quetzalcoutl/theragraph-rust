@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO indexer_state (id, contract_address, contract_type, last_block, inserted_at, updated_at) \n        VALUES (gen_random_uuid(), $1, $2, $3, NOW(), NOW())\n        ON CONFLICT (contract_address) DO UPDATE \n        SET last_block = EXCLUDED.last_block, \n            contract_type = EXCLUDED.contract_type,\n            updated_at = NOW()\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "14c9fd7792166038075973dd8644d7d77de80f74cefd037b2f5ad4c9a2b7bb4c"
+}
