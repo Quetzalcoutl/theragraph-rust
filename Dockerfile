@@ -85,7 +85,9 @@ RUN chmod +x /app/healthcheck.sh
 
 # Use the scripted healthcheck; increase start-period so the app can bind and be ready
 # Make start period generous and allow more retries to avoid false negatives during startup
-HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=10 CMD /app/healthcheck.sh
+# Run healthcheck under bash and, on failure, print the logfile so Docker/Coolify capture diagnostics
+HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=10 \
+  CMD ["bash","-lc","/app/healthcheck.sh || (echo '--- healthcheck failed; /tmp/healthcheck.log ---' && cat /tmp/healthcheck.log)"]
 
 # Entrypoint will start the Kafka waiter in background so the app can start and serve health checks
 # Use shell form to pass env and then exec CMD safely so CMD is not passed as an arg to the wait script
