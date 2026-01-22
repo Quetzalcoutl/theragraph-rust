@@ -272,8 +272,34 @@ pub struct RecommendationConfig {
 impl Config {
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self> {
-        // Try to load .env file (ignore if not found)
-        dotenvy::dotenv().ok();
+        // Prefer loading env from a directory of files (FFOLDER) for platforms that mount secrets as files.
+        // Each file name is the env var name and its contents is the value.
+        if let Ok(folder) = std::env::var("FFOLDER") {
+            let p = std::path::Path::new(&folder);
+            if p.is_dir() {
+                for entry in std::fs::read_dir(p).unwrap_or_default() {
+                    if let Ok(e) = entry {
+                        if let Ok(fname) = e.file_name().into_string() {
+                            let fpath = e.path();
+                            if fpath.is_file() {
+                                if let Ok(mut contents) = std::fs::read_to_string(&fpath) {
+                                    // Trim trailing newlines/spaces
+                                    contents = contents.trim().to_string();
+                                    // Only set env var if not already set in the environment
+                                    if std::env::var(&fname).is_err() {
+                                        std::env::set_var(&fname, contents);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                log::info!("Loaded configuration from FFOLDER={}", folder);
+            }
+        } else {
+            // Try to load .env file (ignore if not found)
+            dotenvy::dotenv().ok();
+        }
 
         let config = Self {
             blockchain: BlockchainConfig::from_env()?,
