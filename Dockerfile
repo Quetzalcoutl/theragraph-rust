@@ -1,125 +1,122 @@
+# Dockerfile (refactor): smaller runtime, clearer stages, reproducible builds
+# - Builder: caches deps, supports SQLX_OFFLINE by including .sqlx and migrations
+# - Runtime: minimal Debian image, explicit runtime packages, healthcheck + debug wrapper
+# Keep `DEBUG_RUN_WRAPPER=true` for now to capture startup logs during active debugging — flip to "false" when done.
+
 FROM rustlang/rust:nightly AS builder
 
-WORKDIR /app
+LABEL org.opencontainers.image.source="https://github.com/Quetzalcoutl/theragraph-rust"
 
-# Ensure examples dir exists even if the build fails (prevents later COPY failures)
-RUN mkdir -p /app/examples
+ARG CHAIN_ID=11155111
+ARG API_PORT=8081
+ARG DATABASE_URL
+ARG RPC_URL
+ARG KAFKA_BROKERS=kafka:29092
+ARG ELIXIR_DATABASE_URL
+ARG COOLIFY_URL
+ARG COOLIFY_FQDN
+ARG COOLIFY_BRANCH
+ARG COOLIFY_RESOURCE_UUID
 
 ENV DEBIAN_FRONTEND=noninteractive
-ARG DATABASE_URL
 ENV SQLX_OFFLINE=1
 ENV CARGO_BUILD_JOBS=1
 
-# Copy manifests
+WORKDIR /app
+
+# Copy dependency manifests first (keeps layer cache effective)
 COPY Cargo.toml Cargo.lock ./
-# Ensure SQLx migrations are available at build-time for `sqlx::migrate!` macro
+
+# Ensure SQLx migrations and prepared query cache are available for offline builds
 COPY migrations/ ./migrations/
-# Also include prepared SQLx query cache for offline compilation (generated via `cargo sqlx prepare`)
-# This allows `SQLX_OFFLINE=1` to succeed during builder compile and avoids needing sqlx-cli in CI
 COPY .sqlx/ .sqlx/
 
-# Create dummy main to cache dependencies
+# Install build tools needed for native deps and warm the cargo target cache using a tiny dummy crate
 RUN apt-get update -qq && apt-get install -y -qq \
     build-essential \
     cmake \
     pkg-config \
     libsasl2-dev \
     libssl-dev \
-    && rm -rf /var/lib/apt/lists/* && \
-    mkdir src && \
-    echo "fn main() {}" > src/main.rs && \
-    # Also add a minimal lib placeholder so Cargo can resolve a [lib] target during dependency caching
-    echo "pub fn __dummy_lib() {}" > src/lib.rs && \
-    cargo build --release -j 1 && \
-    rm -rf src
+    ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p src \
+  && echo "fn main() {}" > src/main.rs \
+  && echo "pub fn __dummy_lib() {}" > src/lib.rs \
+  && cargo build --release -j 1 \
+  && rm -rf src
 
-# Copy source code
+# Copy source and build the release binary
 COPY src ./src
 
-# If a DATABASE_URL build-arg is supplied and sqlx-cli is available, attempt to prepare SQLx query cache.
-# Otherwise rely on committed sqlx-data.json and SQLX_OFFLINE=1
+# If DATABASE_URL build-arg is provided and cargo-sqlx exists in builder, attempt prepare (non-fatal)
 RUN if [ -n "$DATABASE_URL" ]; then \
       echo "DATABASE_URL provided; attempting cargo sqlx prepare if sqlx-cli is installed"; \
       if command -v cargo-sqlx >/dev/null 2>&1; then \
         export DATABASE_URL="$DATABASE_URL" && cargo sqlx prepare -- -q || echo "cargo sqlx prepare failed"; \
       else \
-        echo "sqlx-cli not found (cargo-sqlx), skipping prepare"; \
+        echo "sqlx-cli not found, skipping prepare"; \
       fi; \
     else \
-      echo "No DATABASE_URL build-arg; assuming sqlx-data.json is present and using SQLX_OFFLINE"; \
+      echo "No DATABASE_URL build-arg; relying on committed .sqlx and SQLX_OFFLINE=1"; \
     fi
 
-# Build for release and build consumer example into release artifacts
-RUN touch src/main.rs && \
-    cargo build --release -j 1 && \
-    # Only attempt to build the example if the examples directory exists (prevents build failures when examples are absent)
-    if [ -d examples ]; then \
-      cargo build --release --example consumer_nebula || true; \
-    fi && \
-    # Ensure target/example and examples directories exist so runtime COPYs don't fail
-    mkdir -p /app/target/release/examples /app/examples && \
-    [ -f /app/target/release/examples/consumer_nebula ] || touch /app/target/release/examples/consumer_nebula
+# Real build: produce release binary and optional example
+RUN touch src/main.rs \
+  && cargo build --release -j 1 \
+  && if [ -d examples ]; then cargo build --release --example consumer_nebula || true; fi \
+  && mkdir -p /app/target/release/examples /app/examples \
+  && [ -f /app/target/release/examples/consumer_nebula ] || touch /app/target/release/examples/consumer_nebula
 
-# Runtime stage
+# Runtime image: minimal and predictable
 FROM debian:trixie-slim AS runtime
 
-ENV DEBIAN_FRONTEND=noninteractive
+LABEL maintainer="Theragraph <ops@thera.example>"
 
+ENV DEBIAN_FRONTEND=noninteractive \
+    KAFKA_BROKERS=kafka:29092 \
+    API_PORT=8081 \
+    # Keep enabled to capture startup logs during active debugging; set to "false" after fix
+    DEBUG_RUN_WRAPPER=true
+
+# Install only what's necessary for runtime + debugging/health checks
 RUN apt-get update -qq && apt-get install -y -qq \
-    bash \
     ca-certificates \
     libssl3 \
     libsasl2-2 \
     procps \
     netcat-openbsd \
-    iproute2 \
-    iputils-ping \
-    dnsutils \
     curl \
     wget \
-    && rm -rf /var/lib/apt/lists/*
-
-# Fail fast if curl is not available after install (fail build early and surface issue)
-RUN if ! command -v curl >/dev/null 2>&1; then echo "curl not found in runtime image" >&2; exit 1; fi
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy wait script and make it executable
+# Copy helper scripts (healthcheck, kafka waiter, debug wrapper)
 COPY scripts/wait-for-kafka.sh /app/wait-for-kafka.sh
-RUN chmod +x /app/wait-for-kafka.sh
+COPY scripts/healthcheck.sh /app/healthcheck.sh
+COPY scripts/run-debug.sh /app/run-debug.sh
+RUN chmod +x /app/*.sh || true
 
-# Copy main engine binary from builder
+# Copy the compiled artifacts from builder
 COPY --from=builder /app/target/release/theragraph-engine /app/theragraph-engine
-# Copy built consumer example binary (if present)
 COPY --from=builder /app/target/release/examples/consumer_nebula /app/consumer_nebula
-# Copy example assets so consumer can run without source mounts
-# Ensure we copy the directory (trailing slashes) and remove the invalid shell `|| true` suffix
 COPY --from=builder /app/examples/ /app/examples/
+RUN ["/bin/sh","-c","[ -f /app/consumer_nebula ] && chmod +x /app/consumer_nebula || true; [ -f /app/theragraph-engine ] && chmod +x /app/theragraph-engine || true"]
 
-# Make sure consumer and engine binaries are executable
-RUN ["/bin/sh", "-c", "[ -f /app/consumer_nebula ] && chmod +x /app/consumer_nebula || true; [ -f /app/theragraph-engine ] && chmod +x /app/theragraph-engine || true"]
-
-# Default Kafka bootstrap when running in the same Docker network as Kafka service
-# Supports file-based env via FFOLDER (each file name => env var name). Mount your secret folder and set FFOLDER to point to it.
-ENV KAFKA_BROKERS=kafka:29092
-# API port (configurable) — keep in sync with compose / platform routing
-ENV API_PORT=8081
-
-# Expose API port and use a scripted healthcheck (longer start-period to allow app init)
+# Expose API port
 EXPOSE ${API_PORT}
 
-# Copy and make healthcheck script executable
-COPY scripts/healthcheck.sh /app/healthcheck.sh
-RUN chmod +x /app/healthcheck.sh
-
-# Primary healthcheck: check that the API port is listening using `ss` (no curl dependency) and fall back to the scripted probe
-# Make start period generous and allow more retries to avoid false negatives during startup
+# Healthcheck: prefer checking listening socket (fast) and fallback to scripted probe with diagnostics
 HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=10 \
   CMD ["bash","-lc","if ss -ltn | grep -q \":${API_PORT}\b"; then echo 'healthcheck: port listening'; exit 0; else echo 'healthcheck: port not listening, running scripted probe and dumping diagnostics'; /app/healthcheck.sh || true; echo '--- ps ---'; ps aux; echo '--- ss -ltnp ---'; ss -ltnp 2>/dev/null || true; echo '--- /tmp/healthcheck.log ---'; cat /tmp/healthcheck.log 2>/dev/null || true; exit 1; fi"]
 
-# Entrypoint will start the Kafka waiter in background so the app can start and serve health checks
-# Use shell form to pass env and then conditionally run debug wrapper if DEBUG_RUN_WRAPPER=true
-# Enable debug wrapper by default for troubleshooting; set to "false" or remove for normal operation
-ENV DEBUG_RUN_WRAPPER=true
-ENTRYPOINT ["sh","-c","/app/wait-for-kafka.sh \"${KAFKA_BROKERS:-}\" & if [ \"${DEBUG_RUN_WRAPPER:-}\" = \"true\" ]; then /app/run-debug.sh; else exec \"$@\"; fi" ]
+# Entrypoint: run kafka waiter in background then either the debug wrapper or the engine
+# - Debug wrapper captures env + stdout/stderr into /tmp/startup.log and sleeps so admins can inspect the container
+# - Use `exec` so signals are forwarded to the engine process
+ENTRYPOINT ["sh","-c","/app/wait-for-kafka.sh \"${KAFKA_BROKERS:-}\" & if [ \"${DEBUG_RUN_WRAPPER:-}\" = \"true\" ]; then /app/run-debug.sh; else exec \"$@\"; fi"]
 CMD ["/app/theragraph-engine"]
+
+# Notes:
+# - To capture startup logs without rebuilding, set environment variable `DEBUG_RUN_WRAPPER=true` in your compose / platform.
+# - Revert DEBUG_RUN_WRAPPER to "false" once the underlying issue is fixed to restore normal behavior.
