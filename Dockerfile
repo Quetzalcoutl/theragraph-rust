@@ -14,6 +14,9 @@ ENV CARGO_BUILD_JOBS=1
 COPY Cargo.toml Cargo.lock ./
 # Ensure SQLx migrations are available at build-time for `sqlx::migrate!` macro
 COPY migrations/ ./migrations/
+# Also include prepared SQLx query cache for offline compilation (generated via `cargo sqlx prepare`)
+# This allows `SQLX_OFFLINE=1` to succeed during builder compile and avoids needing sqlx-cli in CI
+COPY .sqlx/ .sqlx/
 
 # Create dummy main to cache dependencies
 RUN apt-get update -qq && apt-get install -y -qq \
