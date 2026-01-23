@@ -312,7 +312,7 @@ pub static EVENT_SIGNATURES: Lazy<HashMap<H256, EventType>> = Lazy::new(|| {
     );
     m.insert(
         keccak256_signature(
-            "PricesUpdated(uint128,uint128,uint128,uint128,uint128,uint64,uint64,uint256)",
+            "PricesUpdated(uint128,uint128,uint128,uint128,uint64,uint256)",
         ),
         EventType::PricesUpdated,
     );
@@ -687,6 +687,54 @@ pub enum ParsedEventData {
         token_id: String,
         buyer: String,
         amount: String,
+    },
+    /// Royalty distributed when royalties are paid out
+    RoyaltyDistributed {
+        token_id: String,
+        recipient: String,
+        amount: String,
+        timestamp: String,
+    },
+    /// EarningsWithdrawn event
+    EarningsWithdrawn {
+        user: String,
+        amount: String,
+        timestamp: String,
+    },
+    /// PricesUpdated admin event
+    PricesUpdated {
+        copy: String,
+        like: String,
+        comment: String,
+        follow: String,
+        fee: String,
+        timestamp: String,
+    },
+    /// TreasuryUpdated admin event
+    TreasuryUpdated {
+        old_treasury: String,
+        new_treasury: String,
+        timestamp: String,
+    },
+    /// DailyLimitsUpdated admin event
+    DailyLimitsUpdated {
+        max_posts: String,
+        max_follows: String,
+        timestamp: String,
+    },
+    /// ContentRequirementsUpdated admin event
+    ContentRequirementsUpdated {
+        snap: String,
+        art: String,
+        music: String,
+        flix: String,
+        timestamp: String,
+    },
+    /// BurnedContentRevenue event
+    BurnedContentRevenue {
+        token_id: String,
+        amount: String,
+        timestamp: String,
     },
     /// Generic/raw data
     Raw { hex: String },
@@ -1254,6 +1302,116 @@ fn parse_event_data(
             Some(ParsedEventData::Purchase { token_id, buyer, amount })
         }
 
+        EventType::RoyaltyDistributed => {
+            // RoyaltyDistributed(uint256 indexed tokenId, address indexed recipient, uint256 amount, uint256 timestamp)
+            let token_id = indexed_params.first().cloned().unwrap_or_default();
+            let recipient = indexed_params.get(1).cloned().unwrap_or_default();
+            let amount = if data.len() >= 32 {
+                U256::from_big_endian(&data[0..32]).to_string()
+            } else { String::new() };
+            let timestamp = if data.len() >= 64 {
+                U256::from_big_endian(&data[32..64]).to_string()
+            } else { String::new() };
+            Some(ParsedEventData::RoyaltyDistributed { token_id, recipient, amount, timestamp })
+        }
+
+        EventType::EarningsWithdrawn => {
+            // EarningsWithdrawn(address indexed user, uint256 amount, uint256 timestamp)
+            let user = indexed_params.first().cloned().unwrap_or_default();
+            let amount = if data.len() >= 32 {
+                U256::from_big_endian(&data[0..32]).to_string()
+            } else { String::new() };
+            let timestamp = if data.len() >= 64 {
+                U256::from_big_endian(&data[32..64]).to_string()
+            } else { String::new() };
+            Some(ParsedEventData::EarningsWithdrawn { user, amount, timestamp })
+        }
+
+        EventType::PricesUpdated => {
+            // PricesUpdated(uint128 copy, uint128 like, uint128 comment, uint128 follow, uint64 fee, uint256 timestamp)
+            if data.is_empty() {
+                Some(ParsedEventData::PricesUpdated { copy: String::new(), like: String::new(), comment: String::new(), follow: String::new(), fee: String::new(), timestamp: String::new() })
+            } else {
+                match ethers::abi::decode(
+                    &[
+                        ethers::abi::ParamType::Uint(128),
+                        ethers::abi::ParamType::Uint(128),
+                        ethers::abi::ParamType::Uint(128),
+                        ethers::abi::ParamType::Uint(128),
+                        ethers::abi::ParamType::Uint(64),
+                        ethers::abi::ParamType::Uint(256),
+                    ],
+                    &data.0,
+                ) {
+                    Ok(tokens) => {
+                        use ethers::abi::Token;
+                        let copy = tokens.get(0).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let like = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let comment = tokens.get(2).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let follow = tokens.get(3).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let fee = tokens.get(4).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let timestamp = tokens.get(5).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        Some(ParsedEventData::PricesUpdated { copy, like, comment, follow, fee, timestamp })
+                    }
+                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
+                }
+            }
+        }
+
+        EventType::TreasuryUpdated => {
+            // TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury, uint256 timestamp)
+            let old = indexed_params.first().cloned().unwrap_or_default();
+            let new = indexed_params.get(1).cloned().unwrap_or_default();
+            let timestamp = if data.len() >= 32 { U256::from_big_endian(&data[0..32]).to_string() } else { String::new() };
+            Some(ParsedEventData::TreasuryUpdated { old_treasury: old, new_treasury: new, timestamp })
+        }
+
+        EventType::DailyLimitsUpdated => {
+            // DailyLimitsUpdated(uint64 maxPosts, uint64 maxFollows, uint256 timestamp)
+            if data.is_empty() {
+                Some(ParsedEventData::DailyLimitsUpdated { max_posts: String::new(), max_follows: String::new(), timestamp: String::new() })
+            } else {
+                match ethers::abi::decode(&[ethers::abi::ParamType::Uint(64), ethers::abi::ParamType::Uint(64), ethers::abi::ParamType::Uint(256)], &data.0) {
+                    Ok(tokens) => {
+                        use ethers::abi::Token;
+                        let max_posts = tokens.get(0).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let max_follows = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let timestamp = tokens.get(2).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        Some(ParsedEventData::DailyLimitsUpdated { max_posts, max_follows, timestamp })
+                    }
+                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
+                }
+            }
+        }
+
+        EventType::ContentRequirementsUpdated => {
+            // ContentRequirementsUpdated(uint128 snap, uint128 art, uint128 music, uint128 flix, uint256 timestamp)
+            if data.is_empty() {
+                Some(ParsedEventData::ContentRequirementsUpdated { snap: String::new(), art: String::new(), music: String::new(), flix: String::new(), timestamp: String::new() })
+            } else {
+                match ethers::abi::decode(&[ethers::abi::ParamType::Uint(128), ethers::abi::ParamType::Uint(128), ethers::abi::ParamType::Uint(128), ethers::abi::ParamType::Uint(128), ethers::abi::ParamType::Uint(256)], &data.0) {
+                    Ok(tokens) => {
+                        use ethers::abi::Token;
+                        let snap = tokens.get(0).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let art = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let music = tokens.get(2).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let flix = tokens.get(3).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let timestamp = tokens.get(4).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        Some(ParsedEventData::ContentRequirementsUpdated { snap, art, music, flix, timestamp })
+                    }
+                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
+                }
+            }
+        }
+
+        EventType::BurnedContentRevenue => {
+            // BurnedContentRevenue(uint256 indexed tokenId, uint256 amount, uint256 timestamp)
+            let token_id = indexed_params.first().cloned().unwrap_or_default();
+            let amount = if data.len() >= 32 { U256::from_big_endian(&data[0..32]).to_string() } else { String::new() };
+            let timestamp = if data.len() >= 64 { U256::from_big_endian(&data[32..64]).to_string() } else { String::new() };
+            Some(ParsedEventData::BurnedContentRevenue { token_id, amount, timestamp })
+        }
+
         // Social follow events
         EventType::Followed => {
             // Followed(address follower, address followed, string followerUsername, string followedUsername, uint256 timestamp)
@@ -1578,6 +1736,142 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_prices_updated_event() {
+        use ethers::types::Bytes;
+        let sig = keccak256_signature("PricesUpdated(uint128,uint128,uint128,uint128,uint64,uint256)");
+        // values: copy=10, like=1, comment=2, follow=0, fee=2000, timestamp
+        let copy = ethers::types::U256::from(10u64);
+        let like = ethers::types::U256::from(1u64);
+        let comment = ethers::types::U256::from(2u64);
+        let follow = ethers::types::U256::from(0u64);
+        let fee = ethers::types::U256::from(2000u64);
+        let timestamp = ethers::types::U256::from(1_700_000_500u64);
+        let encoded = ethers::abi::encode(&[
+            ethers::abi::Token::Uint(copy),
+            ethers::abi::Token::Uint(like),
+            ethers::abi::Token::Uint(comment),
+            ethers::abi::Token::Uint(follow),
+            ethers::abi::Token::Uint(fee),
+            ethers::abi::Token::Uint(timestamp),
+        ]);
+        let data = Bytes::from(encoded);
+
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig];
+        log.data = data.clone();
+
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "PricesUpdated");
+        if let Some(ParsedEventData::PricesUpdated { copy, like, comment, follow, fee, timestamp }) = parsed.data {
+            assert_eq!(copy, "10");
+            assert_eq!(like, "1");
+            assert_eq!(comment, "2");
+            assert_eq!(follow, "0");
+            assert_eq!(fee, "2000");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected PricesUpdated data"); }
+    }
+
+    #[test]
+    fn test_parse_treasury_updated_event() {
+        use ethers::types::Bytes;
+        let sig = keccak256_signature("TreasuryUpdated(address,address,uint256)");
+        let old_topic = h256_from_hex("0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let new_topic = h256_from_hex("0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let timestamp = ethers::types::U256::from(1_700_000_500u64);
+        let mut data_vec = vec![0u8; 32];
+        timestamp.to_big_endian(&mut data_vec[0..32]);
+        let data = Bytes::from(data_vec);
+
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig, old_topic, new_topic];
+        log.data = data.clone();
+
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "TreasuryUpdated");
+        if let Some(ParsedEventData::TreasuryUpdated { old_treasury, new_treasury, timestamp }) = parsed.data {
+            assert_eq!(old_treasury, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            assert_eq!(new_treasury, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected TreasuryUpdated data"); }
+    }
+
+    #[test]
+    fn test_parse_daily_limits_updated_event() {
+        use ethers::types::Bytes;
+        let sig = keccak256_signature("DailyLimitsUpdated(uint64,uint64,uint256)");
+        let max_posts = ethers::abi::Token::Uint(ethers::types::U256::from(50u64));
+        let max_follows = ethers::abi::Token::Uint(ethers::types::U256::from(100u64));
+        let timestamp = ethers::abi::Token::Uint(ethers::types::U256::from(1_700_000_500u64));
+        let encoded = ethers::abi::encode(&[max_posts, max_follows, timestamp]);
+        let data = Bytes::from(encoded);
+
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig];
+        log.data = data.clone();
+
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "DailyLimitsUpdated");
+        if let Some(ParsedEventData::DailyLimitsUpdated { max_posts, max_follows, timestamp }) = parsed.data {
+            assert_eq!(max_posts, "50");
+            assert_eq!(max_follows, "100");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected DailyLimitsUpdated data"); }
+    }
+
+    #[test]
+    fn test_parse_content_requirements_updated_event() {
+        use ethers::types::Bytes;
+        let sig = keccak256_signature("ContentRequirementsUpdated(uint128,uint128,uint128,uint128,uint256)");
+        let snap = ethers::abi::Token::Uint(ethers::types::U256::from(0u64));
+        let art = ethers::abi::Token::Uint(ethers::types::U256::from(10u64));
+        let music = ethers::abi::Token::Uint(ethers::types::U256::from(50u64));
+        let flix = ethers::abi::Token::Uint(ethers::types::U256::from(100u64));
+        let timestamp = ethers::abi::Token::Uint(ethers::types::U256::from(1_700_000_500u64));
+        let encoded = ethers::abi::encode(&[snap, art, music, flix, timestamp]);
+        let data = Bytes::from(encoded);
+
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig];
+        log.data = data.clone();
+
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "ContentRequirementsUpdated");
+        if let Some(ParsedEventData::ContentRequirementsUpdated { snap, art, music, flix, timestamp }) = parsed.data {
+            assert_eq!(snap, "0");
+            assert_eq!(art, "10");
+            assert_eq!(music, "50");
+            assert_eq!(flix, "100");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected ContentRequirementsUpdated data"); }
+    }
+
+    #[test]
+    fn test_parse_burned_content_revenue_event() {
+        use ethers::types::Bytes;
+        let sig = keccak256_signature("BurnedContentRevenue(uint256,uint256,uint256)");
+        let token_topic = h256_from_hex("0x000000000000000000000000000000000000000000000000000000000000002a");
+        let amount = ethers::types::U256::from(77u64);
+        let timestamp = ethers::types::U256::from(1_700_000_500u64);
+        let mut data_vec = vec![0u8; 64];
+        amount.to_big_endian(&mut data_vec[0..32]);
+        timestamp.to_big_endian(&mut data_vec[32..64]);
+        let data = Bytes::from(data_vec);
+
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig, token_topic];
+        log.data = data.clone();
+
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "BurnedContentRevenue");
+        if let Some(ParsedEventData::BurnedContentRevenue { token_id, amount, timestamp }) = parsed.data {
+            assert_eq!(token_id, "42");
+            assert_eq!(amount, "77");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected BurnedContentRevenue data"); }
+    }
+
+    #[test]
     fn test_parse_purchase_processed_event() {
         use ethers::types::Bytes;
         let sig = keccak256_signature("PurchaseProcessed(uint256,address,uint256)");
@@ -1599,6 +1893,58 @@ mod tests {
             assert_eq!(buyer, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
             assert_eq!(amount, "123");
         } else { panic!("Expected Purchase data"); }
+    }
+
+    #[test]
+    fn test_parse_royalty_distributed_event() {
+        use ethers::types::Bytes;
+        let sig = keccak256_signature("RoyaltyDistributed(uint256,address,uint256,uint256)");
+        let token_topic = h256_from_hex("0x000000000000000000000000000000000000000000000000000000000000002a");
+        let recipient_topic = h256_from_hex("0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let amount = ethers::types::U256::from(50u64);
+        let timestamp = ethers::types::U256::from(1_700_000_500u64);
+        let mut data_vec = vec![0u8; 64];
+        amount.to_big_endian(&mut data_vec[0..32]);
+        timestamp.to_big_endian(&mut data_vec[32..64]);
+        let data = Bytes::from(data_vec);
+
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig, token_topic, recipient_topic];
+        log.data = data.clone();
+
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "RoyaltyDistributed");
+        if let Some(ParsedEventData::RoyaltyDistributed { token_id, recipient, amount, timestamp }) = parsed.data {
+            assert_eq!(token_id, "42");
+            assert_eq!(recipient, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+            assert_eq!(amount, "50");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected RoyaltyDistributed data"); }
+    }
+
+    #[test]
+    fn test_parse_earnings_withdrawn_event() {
+        use ethers::types::Bytes;
+        let sig = keccak256_signature("EarningsWithdrawn(address,uint256)");
+        let user_topic = h256_from_hex("0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let amount = ethers::types::U256::from(200u64);
+        let timestamp = ethers::types::U256::from(1_700_000_500u64);
+        let mut data_vec = vec![0u8; 64];
+        amount.to_big_endian(&mut data_vec[0..32]);
+        timestamp.to_big_endian(&mut data_vec[32..64]);
+        let data = Bytes::from(data_vec);
+
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig, user_topic];
+        log.data = data.clone();
+
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "EarningsWithdrawn");
+        if let Some(ParsedEventData::EarningsWithdrawn { user, amount, timestamp }) = parsed.data {
+            assert_eq!(user, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+            assert_eq!(amount, "200");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected EarningsWithdrawn data"); }
     }
 
     #[test]
