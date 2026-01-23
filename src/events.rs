@@ -148,6 +148,16 @@ pub static EVENT_SIGNATURES: Lazy<HashMap<H256, EventType>> = Lazy::new(|| {
         keccak256_signature("EarningsWithdrawn(address,uint256)"),
         EventType::EarningsWithdrawn,
     );
+
+    // Newer TheraFriends social events (UserFollowed/UserUnfollowed)
+    m.insert(
+        keccak256_signature("UserFollowed(address,address,uint256)"),
+        EventType::UserFollowed,
+    );
+    m.insert(
+        keccak256_signature("UserUnfollowed(address,address,uint256)"),
+        EventType::UserUnfollowed,
+    );
     m.insert(
         keccak256_signature("UserVerified(address,string)"),
         EventType::UserVerified,
@@ -863,10 +873,13 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
             _ => IndexedParamType::Bytes32,
         },
 
-        // Social events with addresses
-        EventType::Followed | EventType::Unfollowed => match param_index {
+        // Social events with addresses (legacy `Followed/Unfollowed` and new `UserFollowed/UserUnfollowed`)
+        EventType::Followed
+        | EventType::Unfollowed
+        | EventType::UserFollowed
+        | EventType::UserUnfollowed => match param_index {
             0 => IndexedParamType::Address, // follower
-            1 => IndexedParamType::Address, // followed
+            1 => IndexedParamType::Address, // followed/target
             _ => IndexedParamType::Bytes32,
         },
 
@@ -925,8 +938,6 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
 
         // Default to bytes32 for unknown types
         EventType::CollabProposed
-        | EventType::UserFollowed
-        | EventType::UserUnfollowed
         | EventType::BadgeAwarded
         | EventType::BadgeRemoved
         | EventType::TipSent
@@ -1209,6 +1220,12 @@ mod tests {
         let sig2 =
             h256_from_hex("0xe913bf0f321ec4538e6e03894963538ad29d5bc7610699f655b8d4be77ef3c31");
         assert_eq!(EVENT_SIGNATURES.get(&sig2), Some(&EventType::ContentMinted));
+
+        // TheraFriends social event signatures
+        let user_follow_sig = keccak256_signature("UserFollowed(address,address,uint256)");
+        assert_eq!(EVENT_SIGNATURES.get(&user_follow_sig), Some(&EventType::UserFollowed));
+        let user_unfollow_sig = keccak256_signature("UserUnfollowed(address,address,uint256)");
+        assert_eq!(EVENT_SIGNATURES.get(&user_unfollow_sig), Some(&EventType::UserUnfollowed));
     }
 
     #[test]
