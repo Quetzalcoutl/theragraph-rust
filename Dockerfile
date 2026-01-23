@@ -119,5 +119,7 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=10 \
 
 # Entrypoint will start the Kafka waiter in background so the app can start and serve health checks
 # Use shell form to pass env and then conditionally run debug wrapper if DEBUG_RUN_WRAPPER=true
+# Enable debug wrapper by default for troubleshooting; set to "false" or remove for normal operation
+ENV DEBUG_RUN_WRAPPER=true
 ENTRYPOINT ["sh","-c","/app/wait-for-kafka.sh \"${KAFKA_BROKERS:-}\" & if [ \"${DEBUG_RUN_WRAPPER:-}\" = \"true\" ]; then /app/run-debug.sh; else exec \"$@\"; fi" ]
 CMD ["/app/theragraph-engine"]
