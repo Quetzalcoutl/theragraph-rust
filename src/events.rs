@@ -1145,6 +1145,71 @@ fn parse_event_data(
             Some(ParsedEventData::Transfer { from, to, token_id })
         }
 
+        // Social follow events
+        EventType::Followed => {
+            // Followed(address follower, address followed, string followerUsername, string followedUsername, uint256 timestamp)
+            let follower = indexed_params.first().cloned().unwrap_or_default();
+            let followed = indexed_params.get(1).cloned().unwrap_or_default();
+
+            if data.is_empty() {
+                Some(ParsedEventData::Followed {
+                    follower,
+                    followed,
+                    follower_username: String::new(),
+                    followed_username: String::new(),
+                    timestamp: String::new(),
+                })
+            } else {
+                // Decode dynamic strings + uint256 from data payload
+                match ethers::abi::decode(
+                    &[
+                        ethers::abi::ParamType::String,
+                        ethers::abi::ParamType::String,
+                        ethers::abi::ParamType::Uint(256),
+                    ],
+                    &data.0,
+                ) {
+                    Ok(tokens) => {
+                        use ethers::abi::Token;
+                        let follower_username = tokens
+                            .get(0)
+                            .and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None })
+                            .unwrap_or_default();
+                        let followed_username = tokens
+                            .get(1)
+                            .and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None })
+                            .unwrap_or_default();
+                        let timestamp = tokens
+                            .get(2)
+                            .and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None })
+                            .unwrap_or_default();
+
+                        Some(ParsedEventData::Followed { follower, followed, follower_username, followed_username, timestamp })
+                    }
+                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
+                }
+            }
+        }
+
+        EventType::UserFollowed | EventType::UserUnfollowed => {
+            // UserFollowed(address follower, address target, uint256 timestamp)
+            let follower = indexed_params.first().cloned().unwrap_or_default();
+            let target = indexed_params.get(1).cloned().unwrap_or_default();
+            let timestamp = if data.len() >= 32 {
+                U256::from_big_endian(&data[0..32]).to_string()
+            } else {
+                String::new()
+            };
+
+            Some(ParsedEventData::Followed {
+                follower,
+                followed: target,
+                follower_username: String::new(),
+                followed_username: String::new(),
+                timestamp,
+            })
+        }
+
         EventType::ProfileUpdatedExtended => {
             // ProfileUpdatedExtended(address indexed user, string username, string profileHash, string bio, string website, uint256 timestamp)
             if data.is_empty() {
@@ -1232,6 +1297,41 @@ mod tests {
     fn test_event_type_contract() {
         assert_eq!(EventType::SnapMinted.contract_type(), "snap");
         assert_eq!(EventType::Followed.contract_type(), "friends");
+    }
+
+    #[test]
+    fn test_parse_user_followed_event() {
+        // Prepare signature and topics
+        let sig = keccak256_signature("UserFollowed(address,address,uint256)");
+        let follower_topic = h256_from_hex("0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let target_topic = h256_from_hex("0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+        // timestamp in data (uint256)
+        let timestamp = ethers::types::U256::from(1_700_000_500u64);
+        let mut data_vec = vec![0u8; 32];
+        timestamp.to_big_endian(&mut data_vec);
+        let data = ethers::types::Bytes::from(data_vec);
+
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig, follower_topic, target_topic];
+        log.data = data.clone();
+
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "UserFollowed");
+        assert_eq!(parsed.contract_type, "friends");
+        assert_eq!(parsed.indexed_params.len(), 2);
+        assert_eq!(parsed.indexed_params[0], "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(parsed.indexed_params[1], "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+        if let Some(ParsedEventData::Followed { follower, followed, follower_username, followed_username, timestamp }) = parsed.data {
+            assert_eq!(follower, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            assert_eq!(followed, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+            assert_eq!(follower_username, "");
+            assert_eq!(followed_username, "");
+            assert_eq!(timestamp, "1700000500");
+        } else {
+            panic!("Expected Followed data");
+        }
     }
 
     #[test]
