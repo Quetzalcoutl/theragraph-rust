@@ -107,9 +107,9 @@ RUN ["/bin/sh","-c","[ -f /app/consumer_nebula ] && chmod +x /app/consumer_nebul
 # Expose API port
 EXPOSE ${API_PORT}
 
-# Healthcheck: prefer checking listening socket (fast) and fallback to scripted probe with diagnostics
+# Healthcheck: run the scripted probe directly (avoids inline-shell quoting issues); script will emit diagnostics to /tmp/healthcheck.log
 HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=10 \
-  CMD ["bash","-lc","if ss -ltn | grep -q \":${API_PORT}\b"; then echo 'healthcheck: port listening'; exit 0; else echo 'healthcheck: port not listening, running scripted probe and dumping diagnostics'; /app/healthcheck.sh || true; echo '--- ps ---'; ps aux; echo '--- ss -ltnp ---'; ss -ltnp 2>/dev/null || true; echo '--- /tmp/healthcheck.log ---'; cat /tmp/healthcheck.log 2>/dev/null || true; exit 1; fi"]
+  CMD ["/bin/bash","/app/healthcheck.sh"]
 
 # Entrypoint: run kafka waiter in background then either the debug wrapper or the engine
 # - Debug wrapper captures env + stdout/stderr into /tmp/startup.log and sleeps so admins can inspect the container
