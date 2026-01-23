@@ -736,6 +736,87 @@ pub enum ParsedEventData {
         amount: String,
         timestamp: String,
     },
+
+    /// UsernameRegistered event data
+    UsernameRegistered {
+        user: String,
+        username: String,
+        timestamp: String,
+    },
+
+    /// ProfileUpdated (legacy) event data
+    ProfileUpdatedSimple {
+        user: String,
+        username: String,
+        timestamp: String,
+    },
+
+    /// UserVerified event
+    UserVerifiedEvent {
+        user: String,
+        timestamp: String,
+    },
+
+    /// UserBlocked/Unblocked event
+    UserBlockedEvent {
+        user: String,
+        status: bool,
+        timestamp: String,
+    },
+
+    /// ContentBurned event data
+    ContentBurned {
+        token_id: String,
+        owner: String,
+        timestamp: String,
+    },
+
+    /// TokensRecovered (admin)
+    TokensRecovered {
+        token: String,
+        to: String,
+        amount: String,
+        timestamp: String,
+    },
+
+    /// TipSent event
+    TipSent {
+        sender: String,
+        recipient: String,
+        amount: String,
+        timestamp: String,
+    },
+
+    /// BadgeAwarded event
+    BadgeAwardedData {
+        user: String,
+        badge: String,
+        timestamp: String,
+    },
+
+    /// BadgeRemoved event
+    BadgeRemovedData {
+        user: String,
+        badge: String,
+        timestamp: String,
+    },
+
+    /// CollabProposed event
+    CollabProposedData {
+        token_id: String,
+        proposer: String,
+        recipient: String,
+        timestamp: String,
+    },
+
+    /// UsernameTransferred event
+    UsernameTransferredData {
+        from: String,
+        to: String,
+        username: String,
+        timestamp: String,
+    },
+
     /// Generic/raw data
     Raw { hex: String },
 
@@ -965,8 +1046,7 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
         },
 
         EventType::UserBlocked | EventType::UserUnblocked => match param_index {
-            0 => IndexedParamType::Address, // blocker
-            1 => IndexedParamType::Address, // blocked
+            0 => IndexedParamType::Address, // user
             _ => IndexedParamType::Bytes32,
         },
 
@@ -985,6 +1065,36 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
 
         EventType::ProfileUpdated => match param_index {
             0 => IndexedParamType::Address, // user
+            _ => IndexedParamType::Bytes32,
+        },
+
+        EventType::ContentBurned => match param_index {
+            0 => IndexedParamType::Uint256, // tokenId
+            1 => IndexedParamType::Address, // owner
+            _ => IndexedParamType::Bytes32,
+        },
+
+        EventType::TokensRecovered => match param_index {
+            0 => IndexedParamType::Address,
+            1 => IndexedParamType::Address,
+            _ => IndexedParamType::Bytes32,
+        },
+
+        EventType::TipSent => match param_index {
+            0 => IndexedParamType::Address,
+            1 => IndexedParamType::Address,
+            _ => IndexedParamType::Bytes32,
+        },
+
+        EventType::BadgeAwarded | EventType::BadgeRemoved => match param_index {
+            0 => IndexedParamType::Address,
+            _ => IndexedParamType::Bytes32,
+        },
+
+        EventType::CollabProposed => match param_index {
+            0 => IndexedParamType::Uint256,
+            1 => IndexedParamType::Address,
+            2 => IndexedParamType::Address,
             _ => IndexedParamType::Bytes32,
         },
 
@@ -1522,6 +1632,187 @@ fn parse_event_data(
                 }
             }
         }
+
+        // UsernameRegistered(address indexed user, string username, uint256 timestamp)
+        EventType::UsernameRegistered => {
+            let user = indexed_params.first().cloned().unwrap_or_default();
+            if data.is_empty() {
+                Some(ParsedEventData::UsernameRegistered { user, username: String::new(), timestamp: String::new() })
+            } else {
+                match ethers::abi::decode(&[ethers::abi::ParamType::String, ethers::abi::ParamType::Uint(256)], &data.0) {
+                    Ok(tokens) => {
+                        use ethers::abi::Token;
+                        let username = tokens.get(0).and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None }).unwrap_or_default();
+                        let timestamp = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        Some(ParsedEventData::UsernameRegistered { user, username, timestamp })
+                    }
+                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
+                }
+            }
+        }
+
+        // ProfileUpdated(address indexed user, string username, uint256 timestamp)
+        EventType::ProfileUpdated => {
+            let user = indexed_params.first().cloned().unwrap_or_default();
+            if data.is_empty() {
+                Some(ParsedEventData::ProfileUpdatedSimple { user, username: String::new(), timestamp: String::new() })
+            } else {
+                match ethers::abi::decode(&[ethers::abi::ParamType::String, ethers::abi::ParamType::Uint(256)], &data.0) {
+                    Ok(tokens) => {
+                        use ethers::abi::Token;
+                        let username = tokens.get(0).and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None }).unwrap_or_default();
+                        let timestamp = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        Some(ParsedEventData::ProfileUpdatedSimple { user, username, timestamp })
+                    }
+                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
+                }
+            }
+        }
+
+        // UserVerified(address indexed user, uint256 timestamp)
+        EventType::UserVerified => {
+            let user = indexed_params.first().cloned().unwrap_or_default();
+            let timestamp = if data.len() >= 32 { U256::from_big_endian(&data[0..32]).to_string() } else { String::new() };
+            Some(ParsedEventData::UserVerifiedEvent { user, timestamp })
+        }
+
+        // UserBlocked(address indexed user, bool status, uint256 timestamp)
+        EventType::UserBlocked | EventType::UserUnblocked => {
+            let user = indexed_params.first().cloned().unwrap_or_default();
+            if data.is_empty() {
+                Some(ParsedEventData::UserBlockedEvent { user, status: true, timestamp: String::new() })
+            } else {
+                match ethers::abi::decode(&[ethers::abi::ParamType::Bool, ethers::abi::ParamType::Uint(256)], &data.0) {
+                    Ok(tokens) => {
+                        use ethers::abi::Token;
+                        let status = tokens.get(0).and_then(|t| match t { Token::Bool(b) => Some(*b), _ => None }).unwrap_or(true);
+                        let timestamp = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        Some(ParsedEventData::UserBlockedEvent { user, status, timestamp })
+                    }
+                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
+                }
+            }
+        }
+
+        // ContentBurned(uint256 indexed tokenId, address indexed owner, uint256 timestamp)
+        EventType::ContentBurned => {
+            let token_id = indexed_params.first().cloned().unwrap_or_default();
+            let owner = indexed_params.get(1).cloned().unwrap_or_default();
+            let timestamp = if data.len() >= 32 { U256::from_big_endian(&data[0..32]).to_string() } else { String::new() };
+            Some(ParsedEventData::ContentBurned { token_id, owner, timestamp })
+        }
+
+        // TokensRecovered(address indexed token, address indexed to, uint256 amount, uint256 timestamp)
+        EventType::TokensRecovered => {
+            let token = indexed_params.first().cloned().unwrap_or_default();
+            let to = indexed_params.get(1).cloned().unwrap_or_default();
+            if data.is_empty() {
+                Some(ParsedEventData::TokensRecovered { token, to, amount: String::new(), timestamp: String::new() })
+            } else {
+                match ethers::abi::decode(&[ethers::abi::ParamType::Uint(256), ethers::abi::ParamType::Uint(256)], &data.0) {
+                    Ok(tokens) => {
+                        use ethers::abi::Token;
+                        let amount = tokens.get(0).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let timestamp = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        Some(ParsedEventData::TokensRecovered { token, to, amount, timestamp })
+                    }
+                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
+                }
+            }
+        }
+
+        // TipSent(address sender, address recipient, uint256 amount, uint256 timestamp)
+        EventType::TipSent => {
+            let sender = indexed_params.first().cloned().unwrap_or_default();
+            let recipient = indexed_params.get(1).cloned().unwrap_or_default();
+            if data.is_empty() {
+                Some(ParsedEventData::TipSent { sender, recipient, amount: String::new(), timestamp: String::new() })
+            } else {
+                match ethers::abi::decode(&[ethers::abi::ParamType::Uint(256), ethers::abi::ParamType::Uint(256)], &data.0) {
+                    Ok(tokens) => {
+                        use ethers::abi::Token;
+                        let amount = tokens.get(0).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let timestamp = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        Some(ParsedEventData::TipSent { sender, recipient, amount, timestamp })
+                    }
+                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
+                }
+            }
+        }
+
+        // BadgeAwarded(address user, string badge, uint256 timestamp)
+        EventType::BadgeAwarded | EventType::BadgeRemoved => {
+            let user = indexed_params.first().cloned().unwrap_or_default();
+            if data.is_empty() {
+                Some(ParsedEventData::BadgeAwardedData { user, badge: String::new(), timestamp: String::new() })
+            } else {
+                match ethers::abi::decode(&[ethers::abi::ParamType::String, ethers::abi::ParamType::Uint(256)], &data.0) {
+                    Ok(tokens) => {
+                        use ethers::abi::Token;
+                        let badge = tokens.get(0).and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None }).unwrap_or_default();
+                        let timestamp = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        if matches!(event_type, EventType::BadgeAwarded) {
+                            Some(ParsedEventData::BadgeAwardedData { user, badge, timestamp })
+                        } else {
+                            Some(ParsedEventData::BadgeRemovedData { user, badge, timestamp })
+                        }
+                    }
+                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
+                }
+            }
+        }
+
+        // CollabProposed(uint256 tokenId, address proposer, address recipient, uint256 timestamp)
+        EventType::CollabProposed => {
+            let token_id = indexed_params.first().cloned().unwrap_or_default();
+            // Try decoding [address proposer, address recipient, uint256 timestamp] from data
+            if data.is_empty() {
+                Some(ParsedEventData::CollabProposedData { token_id, proposer: String::new(), recipient: String::new(), timestamp: String::new() })
+            } else {
+                match ethers::abi::decode(&[ethers::abi::ParamType::Address, ethers::abi::ParamType::Address, ethers::abi::ParamType::Uint(256)], &data.0) {
+                    Ok(tokens) => {
+                        use ethers::abi::Token;
+                        let proposer = tokens
+                            .get(0)
+                            .and_then(|t| match t {
+                                Token::Address(a) => Some(format!("0x{}", hex::encode(a.as_bytes()))),
+                                _ => None,
+                            })
+                            .unwrap_or_default();
+                        let recipient = tokens
+                            .get(1)
+                            .and_then(|t| match t {
+                                Token::Address(a) => Some(format!("0x{}", hex::encode(a.as_bytes()))),
+                                _ => None,
+                            })
+                            .unwrap_or_default();
+                        let timestamp = tokens.get(2).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        Some(ParsedEventData::CollabProposedData { token_id, proposer, recipient, timestamp })
+                    }
+                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
+                }
+            }
+        }
+
+        // UsernameTransferred(address from, address to, string username, uint256 timestamp)
+        EventType::UsernameTransferred => {
+            let from = indexed_params.first().cloned().unwrap_or_default();
+            let to = indexed_params.get(1).cloned().unwrap_or_default();
+            if data.is_empty() {
+                Some(ParsedEventData::UsernameTransferredData { from, to, username: String::new(), timestamp: String::new() })
+            } else {
+                match ethers::abi::decode(&[ethers::abi::ParamType::String, ethers::abi::ParamType::Uint(256)], &data.0) {
+                    Ok(tokens) => {
+                        use ethers::abi::Token;
+                        let username = tokens.get(0).and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None }).unwrap_or_default();
+                        let timestamp = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        Some(ParsedEventData::UsernameTransferredData { from, to, username, timestamp })
+                    }
+                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
+                }
+            }
+        }
+
         _ => {
             // For unknown events, just return raw data
             if data.is_empty() {
@@ -1953,4 +2244,219 @@ mod tests {
         assert!(EventType::ArtLiked.is_like());
         assert!(EventType::Followed.is_social());
     }
+
+    #[test]
+    fn test_parse_username_registered_event() {
+        use ethers::abi::Token;
+        use ethers::types::Bytes;
+        let sig = keccak256_signature("UsernameRegistered(address,string)");
+        let user_topic = h256_from_hex("0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let tokens = vec![Token::String("alice".to_string()), Token::Uint(ethers::types::U256::from(1_700_000_500u64))];
+        let data = Bytes::from(ethers::abi::encode(&tokens));
+
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig, user_topic];
+        log.data = data.clone();
+
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "UsernameRegistered");
+        if let Some(ParsedEventData::UsernameRegistered { user, username, timestamp }) = parsed.data {
+            assert_eq!(user, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            assert_eq!(username, "alice");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected UsernameRegistered data"); }
+    }
+
+    #[test]
+    fn test_parse_profile_updated_event() {
+        use ethers::abi::Token;
+        use ethers::types::Bytes;
+        let sig = keccak256_signature("ProfileUpdated(address,string,uint256)");
+        let user_topic = h256_from_hex("0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let tokens = vec![Token::String("bob".to_string()), Token::Uint(ethers::types::U256::from(1_700_000_500u64))];
+        let data = Bytes::from(ethers::abi::encode(&tokens));
+
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig, user_topic];
+        log.data = data.clone();
+
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "ProfileUpdated");
+        if let Some(ParsedEventData::ProfileUpdatedSimple { user, username, timestamp }) = parsed.data {
+            assert_eq!(user, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            assert_eq!(username, "bob");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected ProfileUpdated data"); }
+    }
+
+    #[test]
+    fn test_parse_user_verified_and_blocked_events() {
+        use ethers::abi::Token;
+        use ethers::types::Bytes;
+
+        // UserVerified
+        let sig_v = keccak256_signature("UserVerified(address,uint256)");
+        let user_topic = h256_from_hex("0x000000000000000000000000cccccccccccccccccccccccccccccccccccccccc");
+        let mut data_vec = vec![0u8; 32];
+        ethers::types::U256::from(1_700_000_500u64).to_big_endian(&mut data_vec);
+        let data_v = Bytes::from(data_vec.clone());
+
+        let mut log_v = ethers::types::Log::default();
+        log_v.topics = vec![sig_v, user_topic];
+        log_v.data = data_v.clone();
+
+        let parsed_v = parse_log(&log_v, "friends").expect("parse failed");
+        assert_eq!(parsed_v.event_type, "UserVerified");
+        if let Some(ParsedEventData::UserVerifiedEvent { user, timestamp }) = parsed_v.data {
+            assert_eq!(user, "0xcccccccccccccccccccccccccccccccccccccccc");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected UserVerified data"); }
+
+        // UserBlocked
+        let sig_b = keccak256_signature("UserBlocked(address,bool,uint256)");
+        let data = ethers::abi::encode(&[Token::Bool(true), Token::Uint(ethers::types::U256::from(1_700_000_500u64))]);
+        let data_b = Bytes::from(data);
+        let mut log_b = ethers::types::Log::default();
+        log_b.topics = vec![sig_b, user_topic];
+        log_b.data = data_b.clone();
+
+        let parsed_b = parse_log(&log_b, "friends").expect("parse failed");
+        assert_eq!(parsed_b.event_type, "UserBlocked");
+        if let Some(ParsedEventData::UserBlockedEvent { user, status, timestamp }) = parsed_b.data {
+            assert_eq!(user, "0xcccccccccccccccccccccccccccccccccccccccc");
+            assert!(status);
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected UserBlocked data"); }
+    }
+
+    #[test]
+    fn test_parse_content_burned_and_tokens_recovered() {
+        use ethers::types::Bytes;
+        // ContentBurned
+        let sig_cb = keccak256_signature("ContentBurned(uint256,address,uint256)");
+        let token_topic = h256_from_hex("0x000000000000000000000000000000000000000000000000000000000000002a");
+        let owner_topic = h256_from_hex("0x000000000000000000000000dddddddddddddddddddddddddddddddddddddddd");
+        let timestamp = ethers::types::U256::from(1_700_000_500u64);
+        let mut data_vec = vec![0u8; 32];
+        timestamp.to_big_endian(&mut data_vec[0..32]);
+        let data = Bytes::from(data_vec.clone());
+
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig_cb, token_topic, owner_topic];
+        log.data = data.clone();
+
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "ContentBurned");
+        if let Some(ParsedEventData::ContentBurned { token_id, owner, timestamp }) = parsed.data {
+            assert_eq!(token_id, "42");
+            assert_eq!(owner, "0xdddddddddddddddddddddddddddddddddddddddd");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected ContentBurned data"); }
+
+        // TokensRecovered
+        let sig_tr = keccak256_signature("TokensRecovered(address,address,uint256,uint256)");
+        let token_topic = h256_from_hex("0x000000000000000000000000eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        let to_topic = h256_from_hex("0x000000000000000000000000ffffffffffffffffffffffffffffffffffffffff");
+        let amount = ethers::types::U256::from(500u64);
+        let ts = ethers::types::U256::from(1_700_000_500u64);
+        let encoded = ethers::abi::encode(&[ethers::abi::Token::Uint(amount), ethers::abi::Token::Uint(ts)]);
+        let data_tr = Bytes::from(encoded);
+
+        let mut log_tr = ethers::types::Log::default();
+        log_tr.topics = vec![sig_tr, token_topic, to_topic];
+        log_tr.data = data_tr.clone();
+
+        let parsed_tr = parse_log(&log_tr, "friends").expect("parse failed");
+        assert_eq!(parsed_tr.event_type, "TokensRecovered");
+        if let Some(ParsedEventData::TokensRecovered { token, to, amount, timestamp }) = parsed_tr.data {
+            assert_eq!(token, "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+            assert_eq!(to, "0xffffffffffffffffffffffffffffffffffffffff");
+            assert_eq!(amount, "500");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected TokensRecovered data"); }
+    }
+
+    #[test]
+    fn test_parse_tip_and_badge_events() {
+        use ethers::abi::Token;
+        use ethers::types::Bytes;
+
+        // TipSent
+        let sig = keccak256_signature("TipSent(address,address,uint256,uint256)");
+        let sender = h256_from_hex("0x0000000000000000000000001111111111111111111111111111111111111111");
+        let recipient = h256_from_hex("0x0000000000000000000000002222222222222222222222222222222222222222");
+        let encoded = ethers::abi::encode(&[Token::Uint(ethers::types::U256::from(42u64)), Token::Uint(ethers::types::U256::from(1_700_000_500u64))]);
+        let data = Bytes::from(encoded);
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig, sender, recipient];
+        log.data = data.clone();
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "TipSent");
+        if let Some(ParsedEventData::TipSent { sender, recipient, amount, timestamp }) = parsed.data {
+            assert_eq!(sender, "0x1111111111111111111111111111111111111111");
+            assert_eq!(recipient, "0x2222222222222222222222222222222222222222");
+            assert_eq!(amount, "42");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected TipSent data"); }
+
+        // BadgeAwarded
+        let sig_b = keccak256_signature("BadgeAwarded(address,string,uint256)");
+        let user = h256_from_hex("0x0000000000000000000000003333333333333333333333333333333333333333");
+        let tokens = vec![Token::String("gold".to_string()), Token::Uint(ethers::types::U256::from(1_700_000_500u64))];
+        let data_b = Bytes::from(ethers::abi::encode(&tokens));
+        let mut log_b = ethers::types::Log::default();
+        log_b.topics = vec![sig_b, user];
+        log_b.data = data_b.clone();
+        let parsed_b = parse_log(&log_b, "friends").expect("parse failed");
+        assert_eq!(parsed_b.event_type, "BadgeAwarded");
+        if let Some(ParsedEventData::BadgeAwardedData { user, badge, timestamp }) = parsed_b.data {
+            assert_eq!(user, "0x3333333333333333333333333333333333333333");
+            assert_eq!(badge, "gold");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected BadgeAwarded data"); }
+    }
+
+    #[test]
+    fn test_parse_collab_and_username_transferred() {
+        use ethers::abi::Token;
+        use ethers::types::Bytes;
+
+        let sig_collab = keccak256_signature("CollabProposed(uint256,address,address,uint256)");
+        let token_topic = h256_from_hex("0x0000000000000000000000000000000000000000000000000000000000000042");
+        let proposer = ethers::abi::Token::Address(ethers::types::H160::from_low_u64_be(0xabc));
+        let recipient = ethers::abi::Token::Address(ethers::types::H160::from_low_u64_be(0xdef));
+        let ts = ethers::abi::Token::Uint(ethers::types::U256::from(1_700_000_500u64));
+        let encoded = ethers::abi::encode(&[proposer, recipient, ts]);
+        let data = Bytes::from(encoded);
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig_collab, token_topic];
+        log.data = data.clone();
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "CollabProposed");
+        if let Some(ParsedEventData::CollabProposedData { token_id, proposer, recipient, timestamp }) = parsed.data {
+            assert_eq!(token_id, "42");
+            assert!(proposer.starts_with("0x"));
+            assert!(recipient.starts_with("0x"));
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected CollabProposed data"); }
+
+        // UsernameTransferred
+        let sig_ut = keccak256_signature("UsernameTransferred(address,address,string,uint256)");
+        let from = h256_from_hex("0x0000000000000000000000004444444444444444444444444444444444444444");
+        let to = h256_from_hex("0x0000000000000000000000005555555555555555555555555555555555555555");
+        let tokens = vec![Token::String("robert".to_string()), Token::Uint(ethers::types::U256::from(1_700_000_500u64))];
+        let data_ut = Bytes::from(ethers::abi::encode(&tokens));
+        let mut log_ut = ethers::types::Log::default();
+        log_ut.topics = vec![sig_ut, from, to];
+        log_ut.data = data_ut.clone();
+        let parsed_ut = parse_log(&log_ut, "friends").expect("parse failed");
+        assert_eq!(parsed_ut.event_type, "UsernameTransferred");
+        if let Some(ParsedEventData::UsernameTransferredData { from, to, username, timestamp }) = parsed_ut.data {
+            assert_eq!(from, "0x4444444444444444444444444444444444444444");
+            assert_eq!(to, "0x5555555555555555555555555555555555555555");
+            assert_eq!(username, "robert");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected UsernameTransferred data"); }
+    }
 }
+
