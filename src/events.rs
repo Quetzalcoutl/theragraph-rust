@@ -611,11 +611,21 @@ pub enum ParsedEventData {
         price: String,
         timestamp: String,
     },
-    /// Liked event data
+    /// Content copy minted / purchase-and-minted
+    CopyMinted {
+        original_id: String,
+        buyer: String,
+        new_token_id: String,
+        content_type: String,
+        timestamp: String,
+    },
+    /// Liked/unliked event data
     Liked {
         token_id: String,
         liker: String,
+        creator: String,
         total_likes: String,
+        timestamp: String,
     },
     /// Commented event data
     Commented {
@@ -623,8 +633,24 @@ pub enum ParsedEventData {
         comment_id: String,
         commenter: String,
         comment: String,
+        content_type: String,
+        timestamp: String,
     },
-    /// BoughtAndMinted event data
+    /// Bookmarked event data
+    Bookmarked {
+        token_id: String,
+        user: String,
+        bookmarked: bool,
+        timestamp: String,
+    },
+    /// Shared event data
+    Shared {
+        token_id: String,
+        sharer: String,
+        recipient: String,
+        timestamp: String,
+    },
+    /// BoughtAndMinted event data (old naming)
     BoughtAndMinted {
         token_id: String,
         buyer: String,
@@ -656,8 +682,15 @@ pub enum ParsedEventData {
         to: String,
         token_id: String,
     },
+    /// PurchaseProcessed event data
+    Purchase {
+        token_id: String,
+        buyer: String,
+        amount: String,
+    },
     /// Generic/raw data
     Raw { hex: String },
+
 }
 
 // ============================================================================
@@ -933,6 +966,7 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
 
         EventType::PurchaseProcessed | EventType::RoyaltyDistributed => match param_index {
             0 => IndexedParamType::Uint256, // tokenId or similar
+            1 => IndexedParamType::Address,
             _ => IndexedParamType::Bytes32,
         },
 
@@ -960,7 +994,7 @@ fn parse_event_data(
 ) -> Option<ParsedEventData> {
     match event_type {
         EventType::ContentMinted => {
-            // ContentMinted(uint256 tokenId, address creator, uint8 contentType, uint256 price, uint256 timestamp)
+            // ContentMinted(uint256 tokenId, address creator, ContentType contentType, uint256 price, uint256 timestamp)
             let token_id = indexed_params.first().cloned().unwrap_or_default();
             let creator = indexed_params.get(1).cloned().unwrap_or_default();
             let content_type = indexed_params.get(2).cloned().unwrap_or_default();
@@ -989,72 +1023,125 @@ fn parse_event_data(
         }
 
         EventType::ContentCopyMinted => {
-            // ContentCopyMinted(uint256 originalId, address buyer, uint256 newTokenId, uint8 contentType, uint256 timestamp)
+            // ContentCopyMinted(uint256 originalId, address buyer, uint256 newTokenId, ContentType contentType, uint256 timestamp)
             let original = indexed_params.first().cloned().unwrap_or_default();
             let buyer = indexed_params.get(1).cloned().unwrap_or_default();
             let new_token_id = indexed_params.get(2).cloned().unwrap_or_default();
 
             // data layout: [contentType (32 bytes -> uint8), timestamp (32 bytes)]
-            let _content_type = if data.len() >= 32 {
+            let content_type = if data.len() >= 32 {
                 U256::from_big_endian(&data[0..32]).to_string()
             } else {
                 String::new()
             };
 
-            // timestamp is currently not used in the Rust side for this event
-            // keep the value but prefix with underscore to avoid unused variable warning
-            let _timestamp = if data.len() >= 64 {
+            let timestamp = if data.len() >= 64 {
                 U256::from_big_endian(&data[32..64]).to_string()
             } else {
                 String::new()
             };
 
-            Some(ParsedEventData::BoughtAndMinted {
-                token_id: original,
+            Some(ParsedEventData::CopyMinted {
+                original_id: original,
                 buyer,
-                seller: String::new(),
-                price: String::new(),
                 new_token_id,
+                content_type,
+                timestamp,
             })
         }
 
         EventType::ContentLiked => {
-            // ContentLiked(uint256 tokenId, address liker, address creator, uint256 timestamp)
+            // ContentLiked(uint256 tokenId, address liker, address creator, ContentType contentType, uint256 timestamp)
             let token_id = indexed_params.first().cloned().unwrap_or_default();
             let liker = indexed_params.get(1).cloned().unwrap_or_default();
+            let creator = indexed_params.get(2).cloned().unwrap_or_default();
+
+            // data layout: [contentType (32 bytes), timestamp (32 bytes)]
+            let timestamp = if data.len() >= 64 {
+                U256::from_big_endian(&data[32..64]).to_string()
+            } else {
+                String::new()
+            };
+
             Some(ParsedEventData::Liked {
                 token_id,
                 liker,
+                creator,
                 total_likes: String::new(),
+                timestamp,
             })
         }
 
         EventType::ContentUnliked => {
-            // ContentUnliked(uint256 tokenId, address unliker, address creator, uint256 timestamp)
+            // ContentUnliked(uint256 tokenId, address unliker, address creator, ContentType contentType, uint256 timestamp)
             let token_id = indexed_params.first().cloned().unwrap_or_default();
             let unliker = indexed_params.get(1).cloned().unwrap_or_default();
+            let creator = indexed_params.get(2).cloned().unwrap_or_default();
+
+            let timestamp = if data.len() >= 64 {
+                U256::from_big_endian(&data[32..64]).to_string()
+            } else {
+                String::new()
+            };
+
             Some(ParsedEventData::Liked {
                 token_id,
                 liker: unliker,
+                creator,
                 total_likes: String::new(),
+                timestamp,
             })
         }
 
         EventType::ContentCommented => {
-            // ContentCommented(uint256 tokenId, address commenter, uint8 contentType, uint256 commentId, string commentText)
+            // ContentCommented(uint256 tokenId, address commenter, uint256 commentId, string comment, ContentType contentType, uint256 timestamp)
             let token_id = indexed_params.first().cloned().unwrap_or_default();
-            let comment_id = if data.len() >= 32 {
-                U256::from_big_endian(&data[0..32]).to_string()
-            } else {
-                String::new()
-            };
             let commenter = indexed_params.get(1).cloned().unwrap_or_default();
-            Some(ParsedEventData::Commented {
-                token_id,
-                comment_id,
-                commenter,
-                comment: String::new(),
-            })
+
+            // decode ABI: [commentId (uint256), comment (string), contentType (uint8), timestamp (uint256)]
+            if data.is_empty() {
+                Some(ParsedEventData::Commented {
+                    token_id,
+                    comment_id: String::new(),
+                    commenter,
+                    comment: String::new(),
+                    content_type: String::new(),
+                    timestamp: String::new(),
+                })
+            } else {
+                match ethers::abi::decode(
+                    &[
+                        ethers::abi::ParamType::Uint(256),
+                        ethers::abi::ParamType::String,
+                        ethers::abi::ParamType::Uint(8),
+                        ethers::abi::ParamType::Uint(256),
+                    ],
+                    &data.0,
+                ) {
+                    Ok(tokens) => {
+                        use ethers::abi::Token;
+                        let comment_id = tokens
+                            .get(0)
+                            .and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None })
+                            .unwrap_or_default();
+                        let comment = tokens
+                            .get(1)
+                            .and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None })
+                            .unwrap_or_default();
+                        let content_type = tokens
+                            .get(2)
+                            .and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None })
+                            .unwrap_or_default();
+                        let timestamp = tokens
+                            .get(3)
+                            .and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None })
+                            .unwrap_or_default();
+
+                        Some(ParsedEventData::Commented { token_id, comment_id, commenter, comment, content_type, timestamp })
+                    }
+                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
+                }
+            }
         }
 
         EventType::ContentBlocked => {
@@ -1071,11 +1158,18 @@ fn parse_event_data(
             // ContentBookmarked(uint256 tokenId, address user, bool bookmarked, uint256 timestamp)
             let token_id = indexed_params.first().cloned().unwrap_or_default();
             let user = indexed_params.get(1).cloned().unwrap_or_default();
-            Some(ParsedEventData::Transfer {
-                from: user,
-                to: String::new(),
-                token_id,
-            })
+            let bookmarked = if data.len() >= 32 {
+                U256::from_big_endian(&data[0..32]) != U256::zero()
+            } else {
+                true
+            };
+            let timestamp = if data.len() >= 64 {
+                U256::from_big_endian(&data[32..64]).to_string()
+            } else {
+                String::new()
+            };
+
+            Some(ParsedEventData::Bookmarked { token_id, user, bookmarked, timestamp })
         }
 
         EventType::ContentShared => {
@@ -1083,11 +1177,12 @@ fn parse_event_data(
             let token_id = indexed_params.first().cloned().unwrap_or_default();
             let sharer = indexed_params.get(1).cloned().unwrap_or_default();
             let recipient = indexed_params.get(2).cloned().unwrap_or_default();
-            Some(ParsedEventData::Transfer {
-                from: sharer,
-                to: recipient,
-                token_id,
-            })
+            let timestamp = if data.len() >= 32 {
+                U256::from_big_endian(&data[0..32]).to_string()
+            } else {
+                String::new()
+            };
+            Some(ParsedEventData::Shared { token_id, sharer, recipient, timestamp })
         }
         EventType::SnapMinted
         | EventType::ArtMinted
@@ -1127,11 +1222,13 @@ fn parse_event_data(
             if data.len() >= 64 {
                 let liker = format!("0x{}", hex::encode(&data[12..32]));
                 let total_likes = U256::from_big_endian(&data[32..64]).to_string();
-                Some(ParsedEventData::Liked {
-                    token_id,
-                    liker,
-                    total_likes,
-                })
+                let timestamp = if data.len() >= 96 {
+                    U256::from_big_endian(&data[64..96]).to_string()
+                } else {
+                    String::new()
+                };
+                // creator is not present in legacy liked events
+                Some(ParsedEventData::Liked { token_id, liker, creator: String::new(), total_likes, timestamp })
             } else {
                 None
             }
@@ -1143,6 +1240,18 @@ fn parse_event_data(
             let to = indexed_params.get(1).cloned().unwrap_or_default();
             let token_id = indexed_params.get(2).cloned().unwrap_or_default();
             Some(ParsedEventData::Transfer { from, to, token_id })
+        }
+
+        EventType::PurchaseProcessed => {
+            // PurchaseProcessed(uint256 tokenId, address buyer, uint256 amount)
+            let token_id = indexed_params.first().cloned().unwrap_or_default();
+            let buyer = indexed_params.get(1).cloned().unwrap_or_default();
+            let amount = if data.len() >= 32 {
+                U256::from_big_endian(&data[0..32]).to_string()
+            } else {
+                String::new()
+            };
+            Some(ParsedEventData::Purchase { token_id, buyer, amount })
         }
 
         // Social follow events
@@ -1370,6 +1479,126 @@ mod tests {
         } else {
             panic!("Expected ProfileUpdatedExtended data");
         }
+    }
+
+    #[test]
+    fn test_parse_content_minted_event() {
+        use ethers::types::Bytes;
+        // Signature for ContentMinted
+        let sig = h256_from_hex("0xe913bf0f321ec4538e6e03894963538ad29d5bc7610699f655b8d4be77ef3c31");
+        let token_topic = h256_from_hex("0x000000000000000000000000000000000000000000000000000000000000002a");
+        let creator_topic = h256_from_hex("0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let content_type_topic = h256_from_hex("0x0000000000000000000000000000000000000000000000000000000000000003");
+
+        // price + timestamp
+        let price = ethers::types::U256::from(100u64);
+        let timestamp = ethers::types::U256::from(1_700_000_500u64);
+        let mut data_vec = vec![0u8; 64];
+        price.to_big_endian(&mut data_vec[0..32]);
+        timestamp.to_big_endian(&mut data_vec[32..64]);
+        let data = Bytes::from(data_vec);
+
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig, token_topic, creator_topic, content_type_topic];
+        log.data = data.clone();
+
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "ContentMinted");
+        if let Some(ParsedEventData::Minted { token_id, creator, content_type, price, timestamp, .. }) = parsed.data {
+            assert_eq!(token_id, "42");
+            assert_eq!(creator, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            assert_eq!(content_type, "3");
+            assert_eq!(price, "100");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected Minted data"); }
+    }
+
+    #[test]
+    fn test_parse_content_liked_event() {
+        use ethers::types::Bytes;
+        // Signature for ContentLiked
+        let sig = h256_from_hex("0x8417b49947e6fe4baaaf043fd8bc39e9a14bdfcac1627dc1c35f75a8e844321b");
+        let token_topic = h256_from_hex("0x000000000000000000000000000000000000000000000000000000000000002a");
+        let liker_topic = h256_from_hex("0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let creator_topic = h256_from_hex("0x000000000000000000000000cccccccccccccccccccccccccccccccccccccccc");
+
+        // contentType + timestamp
+        let content_type = ethers::types::U256::from(0u64);
+        let timestamp = ethers::types::U256::from(1_700_000_500u64);
+        let mut data_vec = vec![0u8; 64];
+        content_type.to_big_endian(&mut data_vec[0..32]);
+        timestamp.to_big_endian(&mut data_vec[32..64]);
+        let data = Bytes::from(data_vec);
+
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig, token_topic, liker_topic, creator_topic];
+        log.data = data.clone();
+
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "ContentLiked");
+        if let Some(ParsedEventData::Liked { token_id, liker, creator, total_likes: _, timestamp }) = parsed.data {
+            assert_eq!(token_id, "42");
+            assert_eq!(liker, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+            assert_eq!(creator, "0xcccccccccccccccccccccccccccccccccccccccc");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected Liked data"); }
+    }
+
+    #[test]
+    fn test_parse_content_commented_event() {
+        use ethers::abi::Token;
+        use ethers::types::Bytes;
+        // Signature for ContentCommented
+        let sig = h256_from_hex("0x505d1203546d4a3699987fc90279e0a1dfe65117be15cac29d00ca3ed7a673b6");
+        let token_topic = h256_from_hex("0x000000000000000000000000000000000000000000000000000000000000002a");
+        let commenter_topic = h256_from_hex("0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+        let tokens = vec![
+            Token::Uint(ethers::types::U256::from(7u64)),
+            Token::String("nice".to_string()),
+            Token::Uint(ethers::types::U256::from(0u64)),
+            Token::Uint(ethers::types::U256::from(1_700_000_500u64)),
+        ];
+        let data = Bytes::from(ethers::abi::encode(&tokens));
+
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig, token_topic, commenter_topic];
+        log.data = data.clone();
+
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.event_type, "ContentCommented");
+        if let Some(ParsedEventData::Commented { token_id, comment_id, commenter, comment, content_type, timestamp }) = parsed.data {
+            assert_eq!(token_id, "42");
+            assert_eq!(comment_id, "7");
+            assert_eq!(commenter, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+            assert_eq!(comment, "nice");
+            assert_eq!(content_type, "0");
+            assert_eq!(timestamp, "1700000500");
+        } else { panic!("Expected Commented data"); }
+    }
+
+    #[test]
+    fn test_parse_purchase_processed_event() {
+        use ethers::types::Bytes;
+        let sig = keccak256_signature("PurchaseProcessed(uint256,address,uint256)");
+        let token_topic = h256_from_hex("0x000000000000000000000000000000000000000000000000000000000000002a");
+        let buyer_topic = h256_from_hex("0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let amount = ethers::types::U256::from(123u64);
+        let mut data_vec = vec![0u8; 32];
+        amount.to_big_endian(&mut data_vec[0..32]);
+        let data = Bytes::from(data_vec);
+
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![sig, token_topic, buyer_topic];
+        log.data = data.clone();
+
+        let parsed = parse_log(&log, "common").expect("parse failed");
+        assert_eq!(parsed.event_type, "PurchaseProcessed");
+        if let Some(ParsedEventData::Purchase { token_id, buyer, amount }) = parsed.data {
+            assert_eq!(token_id, "42");
+            assert_eq!(buyer, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+            assert_eq!(amount, "123");
+        } else { panic!("Expected Purchase data"); }
     }
 
     #[test]
