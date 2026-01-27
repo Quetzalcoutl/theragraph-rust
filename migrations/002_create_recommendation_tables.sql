@@ -118,6 +118,17 @@ CREATE INDEX IF NOT EXISTS idx_user_interactions_nft ON user_interactions(nft_id
 CREATE INDEX IF NOT EXISTS idx_user_interactions_created ON user_interactions(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_nft_features_nft ON nft_features(nft_id);
 CREATE INDEX IF NOT EXISTS idx_nft_features_tags ON nft_features USING GIN(tags);
-CREATE INDEX IF NOT EXISTS idx_recommendation_cache_user ON recommendation_cache(user_address, feed_type);
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'recommendation_cache' AND column_name = 'feed_type'
+  ) THEN
+    EXECUTE 'CREATE INDEX IF NOT EXISTS idx_recommendation_cache_user ON recommendation_cache(user_address, feed_type)';
+  ELSE
+    EXECUTE 'CREATE INDEX IF NOT EXISTS idx_recommendation_cache_user ON recommendation_cache(user_address)';
+  END IF;
+END
+$$;
 CREATE INDEX IF NOT EXISTS idx_recommendation_cache_expires ON recommendation_cache(expires_at);
 CREATE INDEX IF NOT EXISTS idx_trending_snapshots_window ON trending_snapshots(time_window, contract_type);
