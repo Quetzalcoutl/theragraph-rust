@@ -1128,18 +1128,12 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
             _ => IndexedParamType::Bytes32,
         },
 
-        // Default to bytes32 for unknown types
-        EventType::CollabProposed
-        | EventType::BadgeAwarded
-        | EventType::BadgeRemoved
-        | EventType::TipSent
-        | EventType::PricesUpdated
+        // Default to bytes32 for unknown types (only types not handled above)
+        EventType::PricesUpdated
         | EventType::ContentRequirementsUpdated
-        | EventType::ContentBurned
         | EventType::BurnedContentRevenue
         | EventType::TreasuryUpdated
-        | EventType::DailyLimitsUpdated
-        | EventType::TokensRecovered => IndexedParamType::Bytes32,
+        | EventType::DailyLimitsUpdated => IndexedParamType::Bytes32,
         EventType::Unknown => IndexedParamType::Bytes32,
     }
 }
