@@ -40,7 +40,7 @@ pub async fn update_all_recommendations(pool: &PgPool) -> anyhow::Result<()> {
     });
 
     // If no interactions found (e.g. fresh DB), maybe just get all users for now to seed?
-    let users_to_update = if active_users.is_empty() {
+    let users_to_update: Vec<String> = if active_users.is_empty() {
         sqlx::query_scalar!("SELECT address FROM social_users LIMIT 100")
             .fetch_all(pool)
             .await
