@@ -6,7 +6,7 @@
       {
         "ordinal": 0,
         "name": "last_block",
-        "type_info": "Int8"
+        "type_info": "Int4"
       }
     ],
     "parameters": {
