@@ -32,9 +32,9 @@ jobs:
           file: Dockerfile
           push: true
           tags: |
-            ghcr.io/Quetzalcoutl/theragraph-rust:${{ github.sha }}
-            ghcr.io/Quetzalcoutl/theragraph-rust:latest
+            ghcr.io/quetzalcoutl/theragraph-rust:${{ github.sha }}
+            ghcr.io/quetzalcoutl/theragraph-rust:latest
 
       - name: Output image tags
         run: |
-          echo "image: ghcr.io/Quetzalcoutl/theragraph-rust:${{ github.sha }}"
+          echo "image: ghcr.io/quetzalcoutl/theragraph-rust:${{ github.sha }}"
