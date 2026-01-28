@@ -89,7 +89,7 @@ impl EventProcessor {
             r#"SELECT id FROM nfts WHERE contract_address = $1 AND token_id = $2 LIMIT 1"#
         )
         .bind(contract_address.to_lowercase())
-        .bind(token_id_int as i32)
+        .bind(token_id_int)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| Error::Database {
