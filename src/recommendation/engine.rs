@@ -16,7 +16,7 @@ use super::preferences::UserPreferences;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoredNft {
     pub nft_id: String,
-    pub token_id: i32,
+    pub token_id: i64,
     pub contract_address: String,
     pub score: f32,
     pub reason: RecommendationReason,
@@ -852,7 +852,7 @@ mod tests {
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct CandidateNft {
     id: Option<String>,
-    token_id: i32,
+    token_id: i64,
     contract_address: String,
     contract_type: Option<String>,
     creator_address: String,
