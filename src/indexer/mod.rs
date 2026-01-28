@@ -46,11 +46,11 @@ pub async fn get_last_indexed_block(
     contract_type: &str,
 ) -> Result<Option<u64>> {
     let addr_lower = contract_address.to_lowercase();
-    let result = sqlx::query_scalar!(i64,
+    let result: Option<i64> = sqlx::query_scalar::<_, i64>(
         "SELECT last_block FROM indexer_state WHERE LOWER(contract_address) = $1 AND contract_type = $2",
-        addr_lower,
-        contract_type
     )
+    .bind(addr_lower)
+    .bind(contract_type)
     .fetch_optional(pool)
     .await?;
 
