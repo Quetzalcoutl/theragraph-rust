@@ -1,0 +1,40 @@
+name: Build and Publish Rust Image
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ghcr.io/Quetzalcoutl/theragraph-rust:${{ github.sha }}
+            ghcr.io/Quetzalcoutl/theragraph-rust:latest
+
+      - name: Output image tags
+        run: |
+          echo "image: ghcr.io/Quetzalcoutl/theragraph-rust:${{ github.sha }}"
