@@ -812,9 +812,9 @@ impl EventProcessor {
         increment: bool,
     ) -> Result<()> {
         let query = if increment {
-            "UPDATE nfts SET likes_count = likes_count + 1 WHERE contract_address = $1 AND token_id = $2::integer"
+            "UPDATE nfts SET likes_count = likes_count + 1 WHERE contract_address = $1 AND token_id = $2::bigint"
         } else {
-            "UPDATE nfts SET likes_count = GREATEST(likes_count - 1, 0) WHERE contract_address = $1 AND token_id = $2::integer"
+            "UPDATE nfts SET likes_count = GREATEST(likes_count - 1, 0) WHERE contract_address = $1 AND token_id = $2::bigint"
         };
 
         sqlx::query(query)
@@ -834,9 +834,9 @@ impl EventProcessor {
         increment: bool,
     ) -> Result<()> {
         let query = if increment {
-            "UPDATE nfts SET comments_count = comments_count + 1 WHERE contract_address = $1 AND token_id = $2::integer"
+            "UPDATE nfts SET comments_count = comments_count + 1 WHERE contract_address = $1 AND token_id = $2::bigint"
         } else {
-            "UPDATE nfts SET comments_count = GREATEST(comments_count - 1, 0) WHERE contract_address = $1 AND token_id = $2::integer"
+            "UPDATE nfts SET comments_count = GREATEST(comments_count - 1, 0) WHERE contract_address = $1 AND token_id = $2::bigint"
         };
 
         sqlx::query(query)
@@ -856,9 +856,9 @@ impl EventProcessor {
         increment: bool,
     ) -> Result<()> {
         let query = if increment {
-            "UPDATE nfts SET buys_count = buys_count + 1 WHERE contract_address = $1 AND token_id = $2::integer"
+            "UPDATE nfts SET buys_count = buys_count + 1 WHERE contract_address = $1 AND token_id = $2::bigint"
         } else {
-            "UPDATE nfts SET buys_count = GREATEST(buys_count - 1, 0) WHERE contract_address = $1 AND token_id = $2::integer"
+            "UPDATE nfts SET buys_count = GREATEST(buys_count - 1, 0) WHERE contract_address = $1 AND token_id = $2::bigint"
         };
 
         sqlx::query(query)
