@@ -4,16 +4,19 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'theragraph-rust/**'
-      - 'theragraph-rust/Dockerfile'
-      - 'theragraph-rust/Cargo.toml'
-      - 'theragraph-rust/Cargo.lock'
+      - 'Dockerfile'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
     tags:
       - 'v*'
   pull_request:
     branches: [ main ]
     paths:
-      - 'theragraph-rust/**'
+      - 'Dockerfile'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
   workflow_dispatch:
 
 permissions:
