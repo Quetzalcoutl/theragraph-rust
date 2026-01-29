@@ -3,6 +3,17 @@ name: Build and Publish Rust Image
 on:
   push:
     branches: [ main ]
+    paths:
+      - 'theragraph-rust/**'
+      - 'theragraph-rust/Dockerfile'
+      - 'theragraph-rust/Cargo.toml'
+      - 'theragraph-rust/Cargo.lock'
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'theragraph-rust/**'
   workflow_dispatch:
 
 permissions:
@@ -10,8 +21,33 @@ permissions:
   packages: write
 
 jobs:
-  build-and-publish:
+  build:
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          tags: |
+            ghcr.io/quetzalcoutl/theragraph-rust:${{ github.sha }}
+
+      - name: Output image tag
+        run: |
+          echo "image: ghcr.io/quetzalcoutl/theragraph-rust:${{ github.sha }}"
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+    environment: production
     steps:
       - name: Checkout
         uses: actions/checkout@v4
