@@ -51,6 +51,10 @@ pub struct BlockchainConfig {
     pub max_retries: u32,
     /// Base delay for exponential backoff
     pub retry_delay: Duration,
+    /// Delay between RPC requests to avoid rate limiting (milliseconds)
+    pub request_delay_ms: u64,
+    /// Delay after rate limit error (seconds)
+    pub rate_limit_backoff_secs: u64,
 }
 
 /// Kafka configuration
@@ -394,15 +398,21 @@ impl BlockchainConfig {
                     .parse()
                     .unwrap_or(2000),
             ),
-            batch_size: get_env_or("BLOCK_BATCH_SIZE", "1000")
+            batch_size: get_env_or("BLOCK_BATCH_SIZE", "100")
                 .parse()
-                .unwrap_or(1000),
-            max_retries: get_env_or("RPC_MAX_RETRIES", "3").parse().unwrap_or(3),
+                .unwrap_or(100),
+            max_retries: get_env_or("RPC_MAX_RETRIES", "5").parse().unwrap_or(5),
             retry_delay: Duration::from_millis(
-                get_env_or("RPC_RETRY_DELAY_MS", "1000")
+                get_env_or("RPC_RETRY_DELAY_MS", "2000")
                     .parse()
-                    .unwrap_or(1000),
+                    .unwrap_or(2000),
             ),
+            request_delay_ms: get_env_or("RPC_REQUEST_DELAY_MS", "200")
+                .parse()
+                .unwrap_or(200),
+            rate_limit_backoff_secs: get_env_or("RPC_RATE_LIMIT_BACKOFF_SECS", "30")
+                .parse()
+                .unwrap_or(30),
         })
     }
 }

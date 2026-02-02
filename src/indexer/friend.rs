@@ -23,6 +23,9 @@ struct FriendIndexer {
     poll_interval: Duration,
     batch_size: u64,
     current_block: u64,
+    request_delay: Duration,
+    max_retries: u32,
+    retry_delay: Duration,
 }
 
 /// Run the friend indexer with AppState
@@ -47,6 +50,9 @@ pub async fn run_with_state(state: Arc<AppState>) -> Result<()> {
         poll_interval: state.config.blockchain.poll_interval,
         batch_size: state.config.blockchain.batch_size,
         current_block: start_block,
+        request_delay: Duration::from_millis(state.config.blockchain.request_delay_ms),
+        max_retries: state.config.blockchain.max_retries,
+        retry_delay: state.config.blockchain.retry_delay,
     };
 
     let mut shutdown_rx = state.shutdown.subscribe();
@@ -84,6 +90,9 @@ impl FriendIndexer {
     }
 
     async fn process_batch(&mut self) -> Result<()> {
+        // Add delay before getting block number to avoid rate limiting
+        tokio::time::sleep(self.request_delay).await;
+        
         let latest_block = with_retry(
             || async {
                 self.provider
@@ -92,8 +101,8 @@ impl FriendIndexer {
                     .map(|b| b.as_u64())
                     .map_err(|e| Error::blockchain(format!("Failed to get block number: {}", e)))
             },
-            3,
-            Duration::from_millis(500),
+            self.max_retries,
+            self.retry_delay,
             "get_block_number",
         )
         .await?;
@@ -109,6 +118,9 @@ impl FriendIndexer {
             .from_block(self.current_block)
             .to_block(to_block);
 
+        // Add delay before getting logs
+        tokio::time::sleep(self.request_delay).await;
+        
         let logs = with_retry(
             || async {
                 self.provider
@@ -116,8 +128,8 @@ impl FriendIndexer {
                     .await
                     .map_err(|e| Error::blockchain(format!("Failed to get logs: {}", e)))
             },
-            3,
-            Duration::from_millis(500),
+            self.max_retries,
+            self.retry_delay,
             "get_logs",
         )
         .await?;

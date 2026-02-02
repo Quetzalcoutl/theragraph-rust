@@ -93,6 +93,8 @@ pub async fn save_last_indexed_block(
 }
 
 /// Retry helper for RPC calls with exponential backoff
+/// 
+/// Handles rate limiting (429) with longer backoff periods
 pub async fn with_retry<T, F, Fut>(
     operation: F,
     max_retries: u32,
@@ -110,23 +112,40 @@ where
         match operation().await {
             Ok(result) => return Ok(result),
             Err(e) => {
-                if !e.is_retryable() {
+                // Check if it's a rate limit error (429)
+                let is_rate_limit = e.to_string().contains("429") || e.to_string().contains("Too Many Requests");
+                
+                if !e.is_retryable() && !is_rate_limit {
                     return Err(e);
                 }
 
-                warn!(
-                    "{} failed (attempt {}/{}): {:?}",
-                    operation_name,
-                    attempt + 1,
-                    max_retries,
-                    e
-                );
+                if is_rate_limit {
+                    warn!(
+                        "⚠️  {} hit rate limit (attempt {}/{}): {:?}",
+                        operation_name,
+                        attempt + 1,
+                        max_retries,
+                        e
+                    );
+                    // Use much longer backoff for rate limits
+                    let rate_limit_delay = Duration::from_secs(30 + (attempt as u64 * 10));
+                    warn!("💤 Waiting {} seconds before retry due to rate limit...", rate_limit_delay.as_secs());
+                    tokio::time::sleep(rate_limit_delay).await;
+                } else {
+                    warn!(
+                        "{} failed (attempt {}/{}): {:?}",
+                        operation_name,
+                        attempt + 1,
+                        max_retries,
+                        e
+                    );
 
-                last_error = Some(e);
+                    last_error = Some(e);
 
-                if attempt + 1 < max_retries {
-                    tokio::time::sleep(delay).await;
-                    delay = std::cmp::min(delay * 2, Duration::from_secs(30));
+                    if attempt + 1 < max_retries {
+                        tokio::time::sleep(delay).await;
+                        delay = std::cmp::min(delay * 2, Duration::from_secs(30));
+                    }
                 }
             }
         }
