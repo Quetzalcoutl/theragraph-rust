@@ -14,7 +14,7 @@ use crate::kafka::BlockchainEvent;
 use crate::recommendation::preferences::{record_interaction, InteractionEvent, InteractionType};
 use crate::AppState;
 use rdkafka::config::ClientConfig;
-use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
 use rdkafka::message::Message;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -63,8 +63,8 @@ impl EventProcessor {
             .set("heartbeat.interval.ms", "10000") // 10 seconds (1/3 of session timeout)
             .set("request.timeout.ms", "60000")  // 60 seconds for requests
             .set("socket.timeout.ms", "60000")   // 60 seconds socket timeout
-            .set("enable.auto.commit", "true")
-            .set("auto.offset.reset", "latest")
+            .set("enable.auto.commit", "false")
+            .set("auto.offset.reset", "earliest")
             .create()
             .map_err(|e| Error::kafka(format!("Failed to create consumer: {}", e)))?;
 
@@ -83,7 +83,7 @@ impl EventProcessor {
 
     /// Look up the actual NFT UUID from the database using contract address and token ID
     async fn lookup_nft_uuid(&self, contract_address: &str, token_id: &str) -> Result<Option<Uuid>> {
-        let token_id_int: i64 = token_id.parse().unwrap_or(0);
+        let token_id_int: i32 = token_id.parse().unwrap_or(0);
         
         let result: Option<(Uuid,)> = sqlx::query_as(
             r#"SELECT id FROM nfts WHERE contract_address = $1 AND token_id = $2 LIMIT 1"#
@@ -147,6 +147,11 @@ impl EventProcessor {
                         Ok(msg) => {
                             if let Err(e) = self.process_message(&msg).await {
                                 error!("Failed to process message: {:?}", e);
+                            } else {
+                                // Commit offset only after successful processing
+                                if let Err(e) = self.consumer.commit_message(&msg, CommitMode::Async) {
+                                    error!("Failed to commit offset: {:?}", e);
+                                }
                             }
                         }
                         Err(e) => {

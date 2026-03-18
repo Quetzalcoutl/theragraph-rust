@@ -9,6 +9,7 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use tracing::debug;
 
+use super::cache::RecCache;
 use super::features::NftFeatures;
 use super::preferences::UserPreferences;
 
@@ -16,7 +17,7 @@ use super::preferences::UserPreferences;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoredNft {
     pub nft_id: String,
-    pub token_id: i64,
+    pub token_id: i32,
     pub contract_address: String,
     pub score: f32,
     pub reason: RecommendationReason,
@@ -90,6 +91,7 @@ impl Default for ScoringWeights {
 pub struct RecommendationEngine {
     pool: PgPool,
     weights: ScoringWeights,
+    cache: Option<RecCache>,
 }
 
 impl RecommendationEngine {
@@ -97,12 +99,19 @@ impl RecommendationEngine {
         Self {
             pool,
             weights: ScoringWeights::default(),
+            cache: None,
         }
+    }
+
+    /// Attach a Redis cache layer to the engine.
+    pub fn with_cache(mut self, cache: Option<RecCache>) -> Self {
+        self.cache = cache;
+        self
     }
 
     #[allow(dead_code)]
     pub fn with_weights(pool: PgPool, weights: ScoringWeights) -> Self {
-        Self { pool, weights }
+        Self { pool, weights, cache: None }
     }
 
     /// Get personalized enhanced feed for a user
@@ -218,7 +227,20 @@ impl RecommendationEngine {
         contract_type_filter: Option<&str>,
         exclude_seen: bool,
     ) -> Result<Vec<ScoredNft>> {
-        // Check cache first
+        // Redis cache check first (fast path)
+        if let Some(ref cache) = self.cache {
+            if let Some(cached) = cache
+                .get_recommendations::<Vec<ScoredNft>>(user_address, "personalized")
+                .await
+            {
+                let total = cached.len();
+                if total >= limit {
+                    return Ok(cached.into_iter().take(limit).collect());
+                }
+            }
+        }
+
+        // PostgreSQL cache fallback
         if let Some(cached) =
             get_cached_recommendations(&self.pool, user_address, "personalized").await?
         {
@@ -228,7 +250,18 @@ impl RecommendationEngine {
             }
         }
 
-        let prefs = super::preferences::get_or_create_preferences(&self.pool, user_address).await?;
+        // Get user preferences (Redis → DB fallback)
+        let prefs = if let Some(ref cache) = self.cache {
+            if let Some(cached) = cache.get_user_prefs::<UserPreferences>(user_address).await {
+                cached
+            } else {
+                let p = super::preferences::get_or_create_preferences(&self.pool, user_address).await?;
+                cache.set_user_prefs(user_address, &p).await;
+                p
+            }
+        } else {
+            super::preferences::get_or_create_preferences(&self.pool, user_address).await?
+        };
 
         // Get candidate NFTs (more than needed for diversity)
         let candidates = self
@@ -240,6 +273,13 @@ impl RecommendationEngine {
         let mut seen_creators: HashMap<String, usize> = HashMap::new();
         let mut seen_tags: HashMap<String, usize> = HashMap::new();
 
+        // Bulk-load seen NFT IDs to avoid N+1 per-candidate queries
+        let seen_nft_ids: std::collections::HashSet<String> = if exclude_seen {
+            self.get_seen_nft_ids(user_address, &candidates).await?
+        } else {
+            std::collections::HashSet::new()
+        };
+
         for (nft, features) in candidates {
             let nft_id = match &nft.id {
                 Some(id) => id.clone(),
@@ -247,7 +287,7 @@ impl RecommendationEngine {
             };
 
             // Skip if user has already seen this NFT and exclude_seen is true
-            if exclude_seen && self.has_user_seen_nft(user_address, &nft_id).await? {
+            if exclude_seen && seen_nft_ids.contains(&nft_id) {
                 continue;
             }
 
@@ -297,7 +337,12 @@ impl RecommendationEngine {
         // Apply diversity and discovery
         let result = self.apply_diversity_shuffle(scored, limit);
 
-        // Cache for 10 minutes
+        // Cache in Redis (fast) + PostgreSQL (durable)
+        if let Some(ref cache) = self.cache {
+            cache
+                .set_recommendations(user_address, "personalized", &result)
+                .await;
+        }
         let _ = cache_recommendations(&self.pool, user_address, "personalized", &result, 10).await;
 
         debug!(
@@ -316,8 +361,18 @@ impl RecommendationEngine {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<ScoredNft>> {
-        // Get list of addresses this user follows
-        let following = self.get_following_addresses(user_address).await?;
+        // Get list of addresses this user follows (Redis → DB fallback)
+        let following = if let Some(ref cache) = self.cache {
+            if let Some(cached) = cache.get_following(user_address).await {
+                cached
+            } else {
+                let addrs = self.get_following_addresses(user_address).await?;
+                cache.set_following(user_address, &addrs).await;
+                addrs
+            }
+        } else {
+            self.get_following_addresses(user_address).await?
+        };
 
         if following.is_empty() {
             return Ok(Vec::new());
@@ -329,6 +384,26 @@ impl RecommendationEngine {
             .await?;
 
         // Score them (simpler scoring for following feed - mostly chronological)
+        // Fetch all features in parallel first (eliminates N+1)
+        let feature_futures: Vec<_> = nfts
+            .iter()
+            .filter_map(|nft| {
+                nft.id.as_ref().map(|id| {
+                    let id = id.clone();
+                    async move {
+                        let features = self.get_nft_features(&id).await;
+                        (id, features)
+                    }
+                })
+            })
+            .collect();
+
+        let feature_results = futures::future::join_all(feature_futures).await;
+        let mut feature_map: HashMap<String, Option<NftFeatures>> = HashMap::new();
+        for (id, feat_result) in feature_results {
+            feature_map.insert(id, feat_result.unwrap_or(None));
+        }
+
         let mut scored: Vec<ScoredNft> = Vec::new();
 
         for nft in nfts {
@@ -339,7 +414,7 @@ impl RecommendationEngine {
             let contract_type = nft.contract_type.clone().unwrap_or_default();
             let created_at = nft.created_at.clone().unwrap_or_default();
 
-            let features = self.get_nft_features(&nft_id).await?;
+            let features = feature_map.remove(&nft_id).flatten();
 
             // For following feed, score is mainly recency + engagement
             let recency_score = Self::compute_recency_score(&created_at);
@@ -630,7 +705,15 @@ impl RecommendationEngine {
     }
 
     /// Check if user has already seen/interacted with an NFT
+    /// Redis SET cache → PostgreSQL fallback
     async fn has_user_seen_nft(&self, user_address: &str, nft_id: &str) -> Result<bool> {
+        // Redis fast path
+        if let Some(ref cache) = self.cache {
+            if let Some(seen) = cache.has_user_seen_nft(user_address, nft_id).await {
+                return Ok(seen);
+            }
+        }
+
         let result: Option<bool> = sqlx::query_scalar(
             r#"
             SELECT EXISTS(
@@ -650,6 +733,44 @@ impl RecommendationEngine {
         Ok(result.unwrap_or(false))
     }
 
+    /// Bulk-load seen NFT IDs for a user — single SQL query instead of N+1.
+    /// Populates Redis SET for future fast lookups.
+    async fn get_seen_nft_ids(
+        &self,
+        user_address: &str,
+        candidates: &[(CandidateNft, Option<NftFeatures>)],
+    ) -> Result<std::collections::HashSet<String>> {
+        let candidate_ids: Vec<String> = candidates
+            .iter()
+            .filter_map(|(nft, _)| nft.id.clone())
+            .collect();
+
+        if candidate_ids.is_empty() {
+            return Ok(std::collections::HashSet::new());
+        }
+
+        let seen: Vec<String> = sqlx::query_scalar(
+            r#"
+            SELECT DISTINCT nft_id
+            FROM user_interactions
+            WHERE user_address = $1
+            AND nft_id = ANY($2)
+            AND interaction_type IN ('view', 'like', 'purchase', 'save')
+            AND created_at > NOW() - INTERVAL '30 days'
+            "#,
+        )
+        .bind(user_address.to_lowercase())
+        .bind(&candidate_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Populate Redis seen-set for future fast lookups
+        if let Some(ref cache) = self.cache {
+            cache.mark_nfts_seen(user_address, &seen).await;
+        }
+
+        Ok(seen.into_iter().collect())
+    }
 
 
     // Database query helpers
@@ -720,14 +841,34 @@ impl RecommendationEngine {
             .await?
         };
 
-        // Fetch features in parallel for better performance
+        // Fetch features in parallel (Niko Matsakis: join_all replaces sequential N+1)
+        let feature_futures: Vec<_> = nfts
+            .iter()
+            .filter_map(|nft| {
+                nft.id.as_ref().map(|id| {
+                    let id = id.clone();
+                    async move {
+                        let features = self.get_nft_features(&id).await;
+                        (id, features)
+                    }
+                })
+            })
+            .collect();
+
+        let feature_results = futures::future::join_all(feature_futures).await;
+
         let mut results = Vec::with_capacity(nfts.len());
+        let mut feature_map: HashMap<String, Option<NftFeatures>> = HashMap::new();
+        for (id, feat_result) in feature_results {
+            feature_map.insert(id, feat_result.unwrap_or(None));
+        }
+
         for nft in nfts {
             let nft_id = match &nft.id {
                 Some(id) => id.clone(),
                 None => continue,
             };
-            let features = self.get_nft_features(&nft_id).await?;
+            let features = feature_map.remove(&nft_id).flatten();
             results.push((nft, features));
         }
 
@@ -735,7 +876,21 @@ impl RecommendationEngine {
     }
 
     async fn get_nft_features(&self, nft_id: &str) -> Result<Option<NftFeatures>> {
-        super::features::get_features(&self.pool, nft_id).await
+        // Redis fast path
+        if let Some(ref cache) = self.cache {
+            if let Some(cached) = cache.get_nft_features::<NftFeatures>(nft_id).await {
+                return Ok(Some(cached));
+            }
+        }
+
+        let features = super::features::get_features(&self.pool, nft_id).await?;
+
+        // Cache in Redis on miss
+        if let (Some(ref cache), Some(ref f)) = (&self.cache, &features) {
+            cache.set_nft_features(nft_id, f).await;
+        }
+
+        Ok(features)
     }
 
     async fn get_following_addresses(&self, user_address: &str) -> Result<Vec<String>> {
@@ -852,7 +1007,7 @@ mod tests {
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct CandidateNft {
     id: Option<String>,
-    token_id: i64,
+    token_id: i32,
     contract_address: String,
     contract_type: Option<String>,
     creator_address: String,

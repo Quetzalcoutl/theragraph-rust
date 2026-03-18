@@ -13,7 +13,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
+use std::time::Duration;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::compression::CompressionLayer;
+use tower_http::timeout::TimeoutLayer;
 use tracing::{error, info};
 
 use crate::recommendation::{
@@ -21,11 +24,16 @@ use crate::recommendation::{
     preferences::{record_interaction, InteractionEvent, InteractionType},
     ScoredNft,
 };
+use crate::boards::{BoardCacheState, board_routes, warm_cache};
+
+use crate::recommendation::cache::RecCache;
 
 /// Shared application state
+#[allow(dead_code)]
 pub struct AppState {
     pub pool: PgPool,
     pub engine: RecommendationEngine,
+    pub board_cache: Arc<BoardCacheState>,
 }
 
 /// Query params for feed endpoints
@@ -81,10 +89,14 @@ pub struct HealthResponse {
 }
 
 /// Start the API server
-pub async fn start_server(pool: PgPool, port: u16) -> Result<()> {
-    let engine = RecommendationEngine::new(pool.clone());
+pub async fn start_server(pool: PgPool, port: u16, bundler_router: Option<Router>, rec_cache: Option<RecCache>) -> Result<()> {
+    let engine = RecommendationEngine::new(pool.clone()).with_cache(rec_cache);
+    let board_cache = Arc::new(BoardCacheState::new(pool.clone()));
 
-    let state = Arc::new(AppState { pool, engine });
+    // Warm board caches on startup
+    warm_cache(&board_cache).await;
+
+    let state = Arc::new(AppState { pool, engine, board_cache: board_cache.clone() });
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -112,8 +124,22 @@ pub async fn start_server(pool: PgPool, port: u16) -> Result<()> {
             "/api/v1/preferences/:user_address",
             get(get_user_preferences),
         )
+        // Board cache endpoints
+        .merge(board_routes().with_state(board_cache))
+        // Middleware: gzip/br/zstd response compression for large JSON payloads
+        .layer(CompressionLayer::new())
+        // Middleware: 30s timeout prevents hung requests from consuming resources
+        .layer(TimeoutLayer::new(Duration::from_secs(30)))
         .layer(cors)
         .with_state(state);
+
+    // Nest bundler routes under /bundler/* (if bundler is configured)
+    // Done after .with_state() so both routers are Router<()>
+    let app = if let Some(br) = bundler_router {
+        app.nest("/bundler", br)
+    } else {
+        app
+    };
 
     let addr = format!("0.0.0.0:{}", port);
     info!("🚀 Starting recommendation API server on {}", addr);

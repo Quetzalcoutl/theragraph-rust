@@ -7,6 +7,7 @@ pub mod kafka;
 pub mod config;
 pub mod database;
 pub mod error;
+pub mod bundler;
 
 // Re-export commonly used types
 pub use recommendation::*;

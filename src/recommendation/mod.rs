@@ -25,6 +25,7 @@
 //! - Recency (5%): Newer content bonus
 //! - Diversity penalty (5%): Avoid too much from same creator/tags
 
+pub mod cache;
 pub mod engine;
 pub mod features;
 pub mod graph_client;

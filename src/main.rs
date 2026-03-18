@@ -17,12 +17,15 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use futures::Future;
 use tokio::signal;
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 mod api;
+mod boards;
+mod bundler;
 mod config;
 mod database;
 mod error;
@@ -44,6 +47,7 @@ pub struct AppState {
     pub elixir_db: Database,
     pub kafka: KafkaProducer,
     pub shutdown: broadcast::Sender<()>,
+    pub rec_cache: Option<recommendation::cache::RecCache>,
 }
 
 #[tokio::main]
@@ -86,6 +90,21 @@ async fn main() -> Result<()> {
     let elixir_db = Database::new(&config.elixir_database).await?;
     info!("✅ Connected to Elixir database");
 
+    // Initialize Redis cache for recommendation engine (graceful degradation)
+    let rec_cache = if let Some(ref redis_url) = config.recommendation.redis_url {
+        info!("🔗 Connecting recommendation cache to Redis...");
+        let cache = recommendation::cache::RecCache::connect(redis_url).await;
+        if cache.is_some() {
+            info!("✅ Recommendation Redis cache connected");
+        } else {
+            info!("⚠️ Recommendation Redis cache unavailable, using DB-only mode");
+        }
+        cache
+    } else {
+        info!("ℹ️ No REDIS_URL configured, recommendation cache disabled");
+        None
+    };
+
     // Create shared state
     let state = Arc::new(AppState {
         config: config.clone(),
@@ -93,6 +112,7 @@ async fn main() -> Result<()> {
         elixir_db: elixir_db.clone(),
         kafka: kafka_producer.clone(),
         shutdown: shutdown_tx.clone(),
+        rec_cache,
     });
 
     // Spawn all services
@@ -111,9 +131,16 @@ async fn main() -> Result<()> {
     info!("🎯 Starting real-time event processor...");
     handles.push(event_processor::spawn_event_processor(state.clone()));
 
+    // Initialize ERC-4337 bundler (optional — disabled if PRIVATE_KEY is not set)
+    info!("🌿 Initializing ERC-4337 bundler...");
+    let bundler_router = bundler::init().await;
+    if bundler_router.is_some() {
+        info!("✅ ERC-4337 Bundler ready (routes under /bundler/*)");
+    }
+
     // Spawn API server
     info!("🌐 Starting API server on port {}...", config.api.port);
-    handles.push(spawn_api_server(state.clone()));
+    handles.push(spawn_api_server(state.clone(), bundler_router));
 
     info!("═══════════════════════════════════════════════════════════════");
     info!("  ✅ All services started successfully");
@@ -240,7 +267,7 @@ fn spawn_score_updater(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
                     }
 
                     // Generate personalized recommendations for active users
-                    if let Err(e) = recommendation::updater::update_all_recommendations(pool).await {
+                    if let Err(e) = recommendation::updater::update_all_recommendations(pool, state.rec_cache.clone()).await {
                         error!("Failed to update user recommendations: {:?}", e);
                     }
 
@@ -256,14 +283,18 @@ fn spawn_score_updater(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
 }
 
 /// Spawn the API server
-fn spawn_api_server(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
+fn spawn_api_server(
+    state: Arc<AppState>,
+    bundler_router: Option<axum::Router>,
+) -> tokio::task::JoinHandle<()> {
     let port = state.config.api.port;
     let pool = state.elixir_db.pool().clone();  // Use Elixir DB for NFT queries
+    let rec_cache = state.rec_cache.clone();
     let mut shutdown_rx = state.shutdown.subscribe();
 
     tokio::spawn(async move {
         tokio::select! {
-            result = api::start_server(pool, port) => {
+            result = api::start_server(pool, port, bundler_router, rec_cache) => {
                 if let Err(e) = result {
                     error!("API server error: {:?}", e);
                 }
@@ -275,16 +306,22 @@ fn spawn_api_server(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     })
 }
 
-/// Wait for any task to fail
+/// Wait for any task to fail (async waker-based — no busy-poll)
 async fn wait_for_any_failure(handles: &mut [tokio::task::JoinHandle<()>]) {
-    loop {
+    if handles.is_empty() {
+        return;
+    }
+    use std::pin::Pin;
+    use std::task::Poll;
+    futures::future::poll_fn(|cx| {
         for handle in handles.iter_mut() {
-            if handle.is_finished() {
-                return;
+            if let Poll::Ready(_) = Pin::new(handle).poll(cx) {
+                return Poll::Ready(());
             }
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+        Poll::Pending
+    })
+    .await
 }
 
 /// Wait for all services to complete shutdown

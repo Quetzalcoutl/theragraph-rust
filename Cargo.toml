@@ -30,9 +30,9 @@ rdkafka = { version = "0.36", features = ["cmake-build", "ssl", "sasl"] }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "chrono", "uuid", "migrate"] }
 
 # Web framework - axum with full features
-axum = { version = "0.7", features = ["json", "query", "tracing"] }
+axum = { version = "0.7", features = ["json", "query", "tracing", "macros"] }
 tower = { version = "0.4", features = ["timeout", "limit", "load-shed"] }
-tower-http = { version = "0.5", features = ["cors", "trace", "timeout", "compression-gzip", "request-id"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "timeout", "compression-gzip", "request-id", "limit", "normalize-path"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -76,7 +76,25 @@ metrics-exporter-prometheus = { version = "0.13", optional = true }
 # Graceful shutdown
 signal-hook = "0.3"
 signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
+futures = "0.3"
 log = "0.4.29"
+
+# ── ERC-4337 Bundler (Alloy + Axum + Tokio) ──────────────────────────────────
+# Ethereum stack for bundler (Alloy — Foundry ecosystem, best-in-class Rust Ethereum)
+alloy = { version = "0.8", features = [
+    "full", "provider-http", "signer-local", "sol-types",
+    "contract", "network", "rpc-types", "consensus", "eips",
+] }
+
+# Bundler receipt store — Redis for production, DashMap fallback
+redis = { version = "0.26", features = ["tokio-comp", "connection-manager", "aio"] }
+dashmap = "6"
+
+# Error handling for bundler module (eyre — zero-cost, ergonomic)
+eyre = "0.6"
+
+# Byte utilities
+bytes = "1"
 
 [features]
 default = []

@@ -1,10 +1,11 @@
+use crate::recommendation::cache::RecCache;
 use crate::recommendation::engine::RecommendationEngine;
 use chrono::{Duration as ChronoDuration, Utc};
 use sqlx::PgPool;
 use tracing::{error, info, warn};
 
 /// Update recommendations for all active users
-pub async fn update_all_recommendations(pool: &PgPool) -> anyhow::Result<()> {
+pub async fn update_all_recommendations(pool: &PgPool, cache: Option<RecCache>) -> anyhow::Result<()> {
     // 1. Identify active users (interacted in last 7 days)
     // We look at interactions, or just users who have logged in/connected
     // For now, let's use the social_users table if it has last_seen, or just interactions.
@@ -67,9 +68,11 @@ pub async fn update_all_recommendations(pool: &PgPool) -> anyhow::Result<()> {
     let mut set = tokio::task::JoinSet::new();
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(CONCURRENCY_LIMIT));
 
-    // Shared engine instance (cheap to clone as it just holds a pool)
-    let engine = RecommendationEngine::new(pool.clone());
-    let graph_client = std::sync::Arc::new(crate::recommendation::graph_client::GraphClient::new());
+    // Shared engine instance with Redis cache
+    let engine = RecommendationEngine::new(pool.clone()).with_cache(cache.clone());
+    let graph_client = std::sync::Arc::new(
+        crate::recommendation::graph_client::GraphClient::new().with_cache(cache),
+    );
 
     for user_address in users_to_update.clone() {
         let engine = engine.clone(); // RecommendationEngine is cheap to clone
@@ -79,17 +82,13 @@ pub async fn update_all_recommendations(pool: &PgPool) -> anyhow::Result<()> {
         set.spawn(async move {
             let _permit = permit; // Hold permit until task completion
 
-            // 1. Generate standard SQL/ML recommendations
-            let rec_result = engine
-                .get_recommendations(&user_address, 50, None, true)
-                .await;
-
-            // 2. Warm up following feed (fire and forget inside this task)
-            let follow_result = engine.get_following_feed(&user_address, 50, 0).await;
-
-            // 3. "ByteGraph" Power: Offload traversal to NebulaGraph
-            // (Fire and forget for now as we just log the output in PoC)
-            let graph_result = graph_client.get_fof_recommendations(&user_address).await;
+            // Run all three independent calls in parallel (tokio::join!)
+            // Previously sequential — 3x latency improvement per user
+            let (rec_result, follow_result, graph_result) = tokio::join!(
+                engine.get_recommendations(&user_address, 50, None, true),
+                engine.get_following_feed(&user_address, 50, 0),
+                graph_client.get_fof_recommendations(&user_address)
+            );
 
             (user_address, rec_result, follow_result, graph_result)
         });

@@ -16,7 +16,7 @@ use uuid::Uuid;
 pub struct NftFeatures {
     pub nft_id: String,
     pub contract_address: String,
-    pub token_id: i64,
+    pub token_id: i32,
     pub tags: Vec<String>,
     pub primary_color: Option<String>,
     pub style: Option<String>,
@@ -32,7 +32,7 @@ pub struct NftFeatures {
 struct FeaturesRow {
     nft_id: Uuid,
     contract_address: String,
-    token_id: i64,
+    token_id: i32,
     tags: Option<Vec<String>>,
     primary_color: Option<String>,
     style: Option<String>,
@@ -159,7 +159,7 @@ const COLOR_KEYWORDS: &[&str] = &[
 pub fn extract_features(
     nft_id: &str,
     contract_address: &str,
-    token_id: i64,
+    token_id: i32,
     contract_type: &str,
     metadata: &Value,
     creator_quality_score: f32,

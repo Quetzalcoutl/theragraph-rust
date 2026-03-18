@@ -4,9 +4,12 @@ use tempfile::NamedTempFile;
 use tokio::process::Command;
 use tracing::{debug, instrument};
 
+use super::cache::RecCache;
+
 pub struct GraphClient {
     host: String,
     port: String,
+    cache: Option<RecCache>,
 }
 
 impl GraphClient {
@@ -14,14 +17,28 @@ impl GraphClient {
         Self {
             host: std::env::var("NEBULA_HOST").unwrap_or_else(|_| "graphd".to_string()),
             port: std::env::var("NEBULA_PORT").unwrap_or_else(|_| "9669".to_string()),
+            cache: None,
         }
     }
 
-    /// Execute an NGQL query via the nebula-console binary
-    /// This mimics a "native" client by shelling out, allowing us to leverage
-    /// the C++ engine without complex build dependencies.
+    /// Attach a Redis cache layer for Nebula query results.
+    pub fn with_cache(mut self, cache: Option<RecCache>) -> Self {
+        self.cache = cache;
+        self
+    }
+
+    /// Execute an NGQL query via the nebula-console binary.
+    /// Results are cached in Redis when available (cache-aside pattern).
     #[instrument(skip(self, query))]
     pub async fn execute_query(&self, query: &str) -> Result<String> {
+        // ── Cache check ──
+        if let Some(ref cache) = self.cache {
+            if let Some(cached) = cache.get_nebula_query(query).await {
+                debug!("🎯 Nebula cache HIT");
+                return Ok(cached);
+            }
+        }
+
         let mut tmp = NamedTempFile::new().context("Failed to create temp file for NGQL")?;
         write!(tmp, "{}", query).context("Failed to write NGQL to temp file")?;
         let tmp_path = tmp
@@ -56,6 +73,13 @@ impl GraphClient {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+        // ── Cache write ──
+        if let Some(ref cache) = self.cache {
+            cache.set_nebula_query(query, &stdout).await;
+            debug!("✅ Nebula query cached in Redis");
+        }
+
         Ok(stdout)
     }
 
@@ -72,6 +96,14 @@ impl GraphClient {
     /// 6. Weight by FoF overlap (more FoFs liking same content = stronger recommendation)
     /// 7. Return top scored NFTs based on collaborative filtering strength
     pub async fn get_fof_recommendations(&self, user_address: &str) -> Result<Vec<(String, f64)>> {
+        // ── FoF cache check ──
+        if let Some(ref cache) = self.cache {
+            if let Some(cached) = cache.get_fof_recommendations(user_address).await {
+                debug!("🎯 FoF recommendations cache HIT for {}", user_address);
+                return Ok(cached);
+            }
+        }
+
         // Changji Li: Multi-hop traversal with weight accumulation for ByteGraph personalization
         let query = format!(
             r#"
@@ -137,6 +169,12 @@ impl GraphClient {
             if let Ok(score) = score_raw.parse::<f64>() {
                 results.push((addr, score));
             }
+        }
+
+        // ── FoF cache write ──
+        if let Some(ref cache) = self.cache {
+            cache.set_fof_recommendations(user_address, &results).await;
+            debug!("✅ FoF recommendations cached for {}", user_address);
         }
 
         Ok(results)

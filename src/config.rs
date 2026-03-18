@@ -271,6 +271,8 @@ pub struct RecommendationConfig {
     pub engagement_update_interval: Duration,
     /// Preference decay rate
     pub preference_decay_rate: f32,
+    /// Redis URL for recommendation cache layer (optional, graceful degradation)
+    pub redis_url: Option<String>,
 }
 
 impl Config {
@@ -614,6 +616,7 @@ impl RecommendationConfig {
             preference_decay_rate: get_env_or("REC_PREFERENCE_DECAY", "0.95")
                 .parse()
                 .unwrap_or(0.95),
+            redis_url: std::env::var("REDIS_URL").ok(),
         })
     }
 }
