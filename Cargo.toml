@@ -71,7 +71,7 @@ rayon = "1.8"
 
 # Metrics
 metrics = "0.22"
-metrics-exporter-prometheus = { version = "0.13", optional = true }
+metrics-exporter-prometheus = { version = "0.13", features = ["http-listener"] }
 
 # Graceful shutdown
 signal-hook = "0.3"
@@ -99,8 +99,7 @@ bytes = "1"
 [features]
 default = []
 telemetry = ["tracing-opentelemetry", "opentelemetry", "opentelemetry-otlp"]
-metrics = ["metrics-exporter-prometheus"]
-full = ["telemetry", "metrics"]
+full = ["telemetry"]
 
 [dev-dependencies]
 tokio-test = "0.4"

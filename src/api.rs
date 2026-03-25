@@ -25,6 +25,7 @@ use crate::recommendation::{
     ScoredNft,
 };
 use crate::boards::{BoardCacheState, board_routes, warm_cache};
+use metrics_exporter_prometheus::PrometheusHandle;
 
 use crate::recommendation::cache::RecCache;
 
@@ -34,6 +35,7 @@ pub struct AppState {
     pub pool: PgPool,
     pub engine: RecommendationEngine,
     pub board_cache: Arc<BoardCacheState>,
+    pub metrics_handle: PrometheusHandle,
 }
 
 /// Query params for feed endpoints
@@ -96,7 +98,12 @@ pub async fn start_server(pool: PgPool, port: u16, bundler_router: Option<Router
     // Warm board caches on startup
     warm_cache(&board_cache).await;
 
-    let state = Arc::new(AppState { pool, engine, board_cache: board_cache.clone() });
+    // Install Prometheus recorder — must happen before any metrics! are recorded
+    let metrics_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
+        .install_recorder()
+        .expect("failed to install Prometheus recorder");
+
+    let state = Arc::new(AppState { pool, engine, board_cache: board_cache.clone(), metrics_handle });
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -119,6 +126,8 @@ pub async fn start_server(pool: PgPool, port: u16, bundler_router: Option<Router
         .route("/api/v1/trending", get(get_trending))
         // Interaction tracking
         .route("/api/v1/interactions", post(record_user_interaction))
+        // Prometheus metrics scrape endpoint
+        .route("/metrics", get(metrics_handler))
         // User preferences
         .route(
             "/api/v1/preferences/:user_address",
@@ -148,6 +157,15 @@ pub async fn start_server(pool: PgPool, port: u16, bundler_router: Option<Router
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+/// Prometheus metrics endpoint
+async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
+    let body = state.metrics_handle.render();
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        body,
+    )
 }
 
 /// Health check endpoint
