@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
     let db = Database::new(&config.database).await?;
     info!("✅ Database connection pool established");
 
-    // Run migrations
+    // Run migrations on the main recommendation DB
     info!("📦 Running database migrations...");
     database::run_migrations(db.pool()).await?;
     info!("✅ Database migrations applied");
@@ -89,6 +89,19 @@ async fn main() -> Result<()> {
     info!("🔗 Connecting to Elixir database...");
     let elixir_db = Database::new(&config.elixir_database).await?;
     info!("✅ Connected to Elixir database");
+
+    // Also run recommendation migrations on the Elixir DB.
+    // The API server uses elixir_db.pool() so that it can query the `nfts` table,
+    // but the recommendation engine also needs its own tables (user_preferences,
+    // recommendation_cache, nft_features) on that same pool.
+    // In local dev both DATABASE_URL and ELIXIR_DATABASE_URL often point to the
+    // same DB, so this is a no-op. In production they differ — hence the 500s.
+    info!("📦 Applying recommendation tables to Elixir DB...");
+    if let Err(e) = database::run_migrations(elixir_db.pool()).await {
+        warn!("⚠️ Could not apply recommendation migrations to Elixir DB (non-fatal): {:?}", e);
+    } else {
+        info!("✅ Recommendation tables ensured on Elixir DB");
+    }
 
     // Initialize Redis cache for recommendation engine (graceful degradation)
     let rec_cache = if let Some(ref redis_url) = config.recommendation.redis_url {
