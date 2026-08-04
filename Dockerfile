@@ -1,9 +1,8 @@
-# Dockerfile (refactor): smaller runtime, clearer stages, reproducible builds
+# Dockerfile: smaller runtime, clearer stages, reproducible builds
 # - Builder: caches deps, supports SQLX_OFFLINE by including .sqlx and migrations
-# - Runtime: minimal Debian image, explicit runtime packages, healthcheck + debug wrapper
-# Keep `DEBUG_RUN_WRAPPER=true` for now to capture startup logs during active debugging — flip to "false" when done.
+# - Runtime: minimal Debian image, explicit runtime packages, healthcheck
 
-FROM rustlang/rust:nightly AS builder
+FROM rust:1.79-slim AS builder
 
 LABEL org.opencontainers.image.source="https://github.com/Quetzalcoutl/theragraph-rust"
 
@@ -43,7 +42,7 @@ RUN apt-get update -qq && apt-get install -y -qq \
   && mkdir -p src \
   && echo "fn main() {}" > src/main.rs \
   && echo "pub fn __dummy_lib() {}" > src/lib.rs \
-  && cargo build --release -j 1 \
+  && cargo build --release --locked -j 1 \
   && rm -rf src
 
 # Copy source and build the release binary
@@ -63,10 +62,13 @@ RUN if [ -n "$DATABASE_URL" ]; then \
 
 # Real build: produce release binary and optional example
 RUN touch src/main.rs \
-  && cargo build --release -j 1 \
+  && cargo build --release --locked -j 1 \
   && if [ -d examples ]; then cargo build --release --example consumer_nebula || true; fi \
   && mkdir -p /app/target/release/examples /app/examples \
   && [ -f /app/target/release/examples/consumer_nebula ] || touch /app/target/release/examples/consumer_nebula
+
+# nebula-console binary — extracted from the official Vesoft image
+FROM vesoft/nebula-console:v3.8.0 AS nebula-console
 
 # Runtime image: minimal and predictable
 FROM debian:trixie-slim AS runtime
@@ -75,9 +77,8 @@ LABEL maintainer="Theragraph <ops@thera.example>"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     KAFKA_BROKERS=kafka:29092 \
-    API_PORT=8081 \
-    # Keep enabled to capture startup logs during active debugging; set to "false" after fix
-    DEBUG_RUN_WRAPPER=true
+    API_PORT=8000 \
+    DEBUG_RUN_WRAPPER=false
 
 # Install only what's necessary for runtime + debugging/health checks
 RUN apt-get update -qq && apt-get install -y -qq \
@@ -92,6 +93,10 @@ RUN apt-get update -qq && apt-get install -y -qq \
 
 WORKDIR /app
 
+# nebula-console binary — needed by graph_client.rs to run nGQL queries
+COPY --from=nebula-console /usr/local/bin/nebula-console /usr/local/bin/nebula-console
+RUN chmod +x /usr/local/bin/nebula-console
+
 # Copy helper scripts (healthcheck, kafka waiter, debug wrapper)
 COPY scripts/wait-for-kafka.sh /app/wait-for-kafka.sh
 COPY scripts/healthcheck.sh /app/healthcheck.sh
@@ -99,10 +104,10 @@ COPY scripts/run-debug.sh /app/run-debug.sh
 RUN chmod +x /app/*.sh || true
 
 # Copy the compiled artifacts from builder
-COPY --from=builder /app/target/release/theragraph-engine /app/theragraph-engine
+COPY --from=builder /app/target/release/theragraph /app/theragraph
 COPY --from=builder /app/target/release/examples/consumer_nebula /app/consumer_nebula
 COPY --from=builder /app/examples/ /app/examples/
-RUN ["/bin/sh","-c","[ -f /app/consumer_nebula ] && chmod +x /app/consumer_nebula || true; [ -f /app/theragraph-engine ] && chmod +x /app/theragraph-engine || true"]
+RUN ["/bin/sh","-c","[ -f /app/consumer_nebula ] && chmod +x /app/consumer_nebula || true; [ -f /app/theragraph ] && chmod +x /app/theragraph || true"]
 
 # Expose API port
 EXPOSE ${API_PORT}
@@ -114,8 +119,8 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=10 \
 # Entrypoint: run kafka waiter in background then either the debug wrapper or the engine
 # - Debug wrapper captures env + stdout/stderr into /tmp/startup.log and sleeps so admins can inspect the container
 # - Use `exec` so signals are forwarded to the engine process
-ENTRYPOINT ["sh","-c","/app/wait-for-kafka.sh \"${KAFKA_BROKERS:-}\" & if [ \"${DEBUG_RUN_WRAPPER:-}\" = \"true\" ]; then /app/run-debug.sh; else exec \"$@\"; fi"]
-CMD ["/app/theragraph-engine"]
+ENTRYPOINT ["sh","-c","/app/wait-for-kafka.sh \"${KAFKA_BROKERS:-}\" & if [ \"${DEBUG_RUN_WRAPPER:-}\" = \"true\" ]; then /app/run-debug.sh; else exec /app/theragraph; fi"]
+CMD ["/app/theragraph"]
 
 # Notes:
 # - To capture startup logs without rebuilding, set environment variable `DEBUG_RUN_WRAPPER=true` in your compose / platform.

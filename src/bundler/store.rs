@@ -8,16 +8,23 @@ use alloy::primitives::B256;
 use dashmap::DashMap;
 use eyre::{Result, WrapErr};
 use redis::{aio::ConnectionManager, AsyncCommands};
-use std::sync::Arc;
+use std::{sync::Arc, time::{SystemTime, UNIX_EPOCH}};
 use tracing::{debug, warn};
 
 use super::types::Receipt;
 
 const TTL_SECS: u64 = 86_400;
 
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+// Memory entry pairs receipt JSON with insertion timestamp for TTL enforcement.
+type MemEntry = (String, u64); // (json, inserted_at_secs)
+
 enum Backend {
     Redis(ConnectionManager),
-    Memory(Arc<DashMap<String, String>>),
+    Memory(Arc<DashMap<String, MemEntry>>),
 }
 
 /// Thread-safe, `Clone`-cheap receipt store.
@@ -64,7 +71,9 @@ impl ReceiptStore {
                     .map_err(|e| warn!("Redis SET failed: {e}"));
             }
             Backend::Memory(map) => {
-                map.insert(key, value);
+                // Evict expired entries on write to keep map bounded
+                map.retain(|_, (_, inserted)| now_secs().saturating_sub(*inserted) < TTL_SECS);
+                map.insert(key, (value, now_secs()));
             }
         }
         debug!("Stored receipt for {:#x}", user_op_hash);
@@ -76,10 +85,19 @@ impl ReceiptStore {
         let raw: Option<String> = match self.inner.as_ref() {
             Backend::Redis(mgr) => {
                 let mut conn = mgr.clone();
-                conn.get(&key).await.unwrap_or(None)
+                conn.get(&key).await
+                    .map_err(|e| warn!("ReceiptStore Redis GET failed for {key}: {e}"))
+                    .unwrap_or(None)
             }
             Backend::Memory(map) => {
-                map.get(&key).map(|r| r.value().clone())
+                map.get(&key).and_then(|r| {
+                    let (json, inserted) = r.value();
+                    if now_secs().saturating_sub(*inserted) < TTL_SECS {
+                        Some(json.clone())
+                    } else {
+                        None // expired — will be pruned on next write
+                    }
+                })
             }
         };
 

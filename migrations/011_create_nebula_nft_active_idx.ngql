@@ -1,0 +1,27 @@
+-- NebulaGraph tag index: nft_active_idx
+--
+-- Kikimo: graph traversals that filter `is_deleted == false AND is_original == true`
+-- scan every `nft` vertex without this index. With 10M+ nft vertices the full-scan
+-- is O(n) per query. This composite tag index narrows the scan to active originals
+-- before the traversal engine evaluates edge filters.
+--
+-- Run once against the production space after deploying this file.
+-- NebulaGraph tag index creation is idempotent — IF NOT EXISTS prevents double-apply.
+--
+-- Apply with:
+--   USE theragraph;
+--   SOURCE migrations/011_create_nebula_nft_active_idx.ngql;
+--
+-- Verify with:
+--   SHOW TAG INDEXES;
+
+USE theragraph;
+
+-- Create tag index on the fields used in the most common is_deleted+is_original filter.
+-- NebulaGraph requires REBUILD INDEX after CREATE to populate existing data.
+CREATE TAG INDEX IF NOT EXISTS nft_active_idx ON nft(is_deleted, is_original);
+
+-- Populate the index with existing vertex data.
+-- This is a background job — the graph remains queryable during rebuild.
+-- Check progress with: SHOW INDEX STATUS;
+REBUILD TAG INDEX nft_active_idx;

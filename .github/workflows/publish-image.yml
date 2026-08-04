@@ -30,6 +30,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Rust (stable + nightly for Miri)
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Install Miri toolchain
+        run: |
+          rustup toolchain install nightly --component miri
+
+      - name: Run Miri (undefined behaviour check on NIF scoring logic)
+        # --no-default-features disables the cdylib/NIF feature so Miri can
+        # analyse the pure scoring code without FFI entrypoints.
+        # -Zmiri-strict-provenance: catches raw-pointer provenance bugs that
+        # could create Use-After-Free at the Rust/BEAM FFI boundary.
+        env:
+          MIRIFLAGS: "-Zmiri-strict-provenance -Zmiri-symbolic-alignment-check"
+        run: cargo +nightly miri test --no-default-features --lib --quiet
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
 

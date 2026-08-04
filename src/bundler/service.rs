@@ -10,7 +10,8 @@ use alloy::{
     consensus::{SignableTransaction, TxEip1559, TxEnvelope},
     eips::{eip2718::Encodable2718, BlockNumberOrTag},
     primitives::{Address, Bytes, TxKind, U256, B256, Uint},
-    providers::{Provider, ProviderBuilder, RootProvider},
+    providers::{Provider, RootProvider},
+    rpc::client::RpcClient,
     signers::{local::PrivateKeySigner, SignerSync},
     sol_types::SolCall,
     transports::http::{Client, Http},
@@ -23,6 +24,7 @@ use super::{
     account_nonce::UserOpNonceManager,
     config::Config,
     contracts::{IAccount, IEntryPoint, IFactory, IPaymaster},
+    error::BundlerError,
     gas::{
         deployment_verification_gas, pack_account_gas_limits, pack_gas_fees, scale_call_gas,
     },
@@ -32,6 +34,7 @@ use super::{
     types::{Call, PackedUserOperation},
 };
 
+#[allow(dead_code)]
 type U192 = Uint<192, 3>;
 pub type HttpProvider = RootProvider<Http<Client>>;
 
@@ -61,22 +64,48 @@ pub enum BatchSimOutcome {
 //   decoded:   "FailedOp { opIndex: 1, reason: \"AA25 invalid account nonce\" }"
 //   raw:       "FailedOp(1, \"AA25 ...\")"  (older alloy)
 //   revert:    "execution reverted: FailedOp(opIndex: 1, reason: \"AA25...\")"
-fn parse_failed_op(msg: &str) -> Option<(usize, String)> {
+//
+// Returns `Ok((op_index, reason))` on a recognised FailedOp, or
+// `Err(BundlerError::Other)` when the message contains "FailedOp" but the
+// index cannot be extracted (malformed / unexpected format).
+// Returns `Err(BundlerError::Other("not a FailedOp"))` when "FailedOp" is
+// absent entirely, so callers can cleanly distinguish the two non-happy cases.
+fn parse_failed_op(msg: &str) -> Result<(usize, String), BundlerError> {
     if !msg.contains("FailedOp") {
-        return None;
+        return Err(BundlerError::Other("not a FailedOp".to_string()));
     }
 
     // Extract opIndex ── try "opIndex: N" then positional "FailedOp(N,"
     let idx: usize = if let Some(p) = msg.find("opIndex: ") {
         let s = &msg[p + 9..];
         let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
-        s[..end].trim().parse().ok()?
+        if end == 0 {
+            tracing::warn!("parse_failed_op: 'opIndex: ' found but no digits follow in: {msg}");
+            return Err(BundlerError::Other(format!(
+                "parse_failed_op: malformed opIndex in: {msg}"
+            )));
+        }
+        s[..end].trim().parse().map_err(|_| {
+            BundlerError::Other(format!("parse_failed_op: opIndex parse error in: {msg}"))
+        })?
     } else if let Some(p) = msg.find("FailedOp(") {
         let s = &msg[p + 9..];
         let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
-        s[..end].trim().parse().ok()?
+        if end == 0 {
+            tracing::warn!("parse_failed_op: 'FailedOp(' found but no digits follow in: {msg}");
+            return Err(BundlerError::Other(format!(
+                "parse_failed_op: malformed positional opIndex in: {msg}"
+            )));
+        }
+        s[..end].trim().parse().map_err(|_| {
+            BundlerError::Other(format!(
+                "parse_failed_op: positional opIndex parse error in: {msg}"
+            ))
+        })?
     } else {
-        return None;
+        return Err(BundlerError::Other(format!(
+            "parse_failed_op: no opIndex anchor found in: {msg}"
+        )));
     };
 
     // Extract reason ── try `reason: "…"` then first `"AA…` fragment
@@ -90,7 +119,203 @@ fn parse_failed_op(msg: &str) -> Option<(usize, String)> {
         "unknown AA error".to_string()
     };
 
-    Some((idx, reason))
+    Ok((idx, reason))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_failed_op ──────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_failed_op_decoded_format() {
+        // alloy "decoded" format: "FailedOp { opIndex: 2, reason: \"AA25 invalid account nonce\" }"
+        let msg = r#"FailedOp { opIndex: 2, reason: "AA25 invalid account nonce" }"#;
+        let result = parse_failed_op(msg);
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        let (idx, reason) = result.unwrap();
+        assert_eq!(idx, 2);
+        assert_eq!(reason, "AA25 invalid account nonce");
+    }
+
+    #[test]
+    fn parse_failed_op_malformed_no_index() {
+        // Contains "FailedOp" but no numeric index after the known anchors.
+        let msg = "execution reverted: FailedOp(opIndex: , reason: \"AA10\")";
+        let result = parse_failed_op(msg);
+        assert!(
+            result.is_err(),
+            "expected Err for malformed input, got {result:?}"
+        );
+        match result.unwrap_err() {
+            BundlerError::Other(s) => assert!(
+                s.contains("parse_failed_op"),
+                "error message should name the function: {s}"
+            ),
+            other => panic!("expected BundlerError::Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_failed_op_positional_index_zero() {
+        // Raw positional format: "FailedOp(0, \"reason\")"
+        let msg = r#"FailedOp(0, "AA10 sender already constructed")"#;
+        let (idx, reason) = parse_failed_op(msg).expect("should parse positional FailedOp(0,…)");
+        assert_eq!(idx, 0);
+        assert_eq!(reason, "AA10 sender already constructed");
+    }
+
+    #[test]
+    fn parse_failed_op_large_index() {
+        // Large op index to confirm usize parsing works for multi-digit values.
+        let msg = r#"FailedOp { opIndex: 999, reason: "AA33 reverted" }"#;
+        let (idx, reason) = parse_failed_op(msg).expect("should parse large index");
+        assert_eq!(idx, 999);
+        assert_eq!(reason, "AA33 reverted");
+    }
+
+    #[test]
+    fn parse_failed_op_revert_prefix_format() {
+        // "execution reverted: FailedOp(N, \"AA…\")" — older alloy style
+        let msg = r#"execution reverted: FailedOp(3, "AA25 invalid account nonce")"#;
+        let (idx, reason) = parse_failed_op(msg).expect("should handle revert-prefix format");
+        assert_eq!(idx, 3);
+        assert_eq!(reason, "AA25 invalid account nonce");
+    }
+
+    #[test]
+    fn parse_failed_op_empty_string_returns_not_failed_op() {
+        // Empty string has no "FailedOp" → Other("not a FailedOp")
+        let err = parse_failed_op("").unwrap_err();
+        match err {
+            BundlerError::Other(s) => assert_eq!(s, "not a FailedOp"),
+            other => panic!("expected Other(\"not a FailedOp\"), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_failed_op_no_failed_op_keyword() {
+        // Generic RPC error — must not parse as FailedOp.
+        let msg = "RPC error: connection refused";
+        let err = parse_failed_op(msg).unwrap_err();
+        match err {
+            BundlerError::Other(s) => assert_eq!(s, "not a FailedOp"),
+            other => panic!("expected Other(\"not a FailedOp\"), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_failed_op_malformed_no_parens_or_braces() {
+        // "FailedOp" present but nothing parseable follows — no anchors found.
+        let msg = "FailedOp something completely unparseable";
+        let err = parse_failed_op(msg).unwrap_err();
+        match err {
+            BundlerError::Other(s) => assert!(
+                s.contains("parse_failed_op"),
+                "error should name the function: {s}"
+            ),
+            other => panic!("expected BundlerError::Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_failed_op_reason_with_aa_fallback() {
+        // Positional format without `reason:` keyword — falls back to `"AA` scan.
+        let msg = r#"FailedOp(1, "AA21 didn't pay prefund")"#;
+        let (idx, reason) = parse_failed_op(msg).expect("should fall back to AA-string scan");
+        assert_eq!(idx, 1);
+        assert_eq!(reason, "AA21 didn't pay prefund");
+    }
+
+    #[test]
+    fn parse_failed_op_unknown_reason_fallback() {
+        // Index found, but no `reason:` and no `"AA` → falls back to "unknown AA error".
+        let msg = "FailedOp(5, no-quotes-here)";
+        let (idx, reason) = parse_failed_op(msg).expect("should parse index even without reason");
+        assert_eq!(idx, 5);
+        assert_eq!(reason, "unknown AA error");
+    }
+
+    // ── BundlerError Display / Debug ─────────────────────────────────────────
+
+    #[test]
+    fn bundler_error_failed_op_display() {
+        let e = BundlerError::FailedOp {
+            op_index: 0,
+            reason: "AA10 sender already constructed".to_string(),
+        };
+        let s = e.to_string();
+        assert!(s.contains("FailedOp"), "Display should mention FailedOp: {s}");
+        assert!(s.contains("0"),        "Display should include op_index: {s}");
+        assert!(s.contains("AA10"),     "Display should include reason: {s}");
+    }
+
+    #[test]
+    fn bundler_error_other_display() {
+        let e = BundlerError::Other("RPC timeout".to_string());
+        assert_eq!(e.to_string(), "RPC timeout");
+    }
+
+    #[test]
+    fn bundler_error_failed_op_debug() {
+        let e = BundlerError::FailedOp { op_index: 3, reason: "AA25".to_string() };
+        let s = format!("{e:?}");
+        assert!(s.contains("FailedOp"), "Debug should include variant name: {s}");
+        assert!(s.contains("3"),         "Debug should include op_index: {s}");
+        assert!(s.contains("AA25"),      "Debug should include reason: {s}");
+    }
+
+    #[test]
+    fn bundler_error_other_debug() {
+        let e = BundlerError::Other("some error".to_string());
+        let s = format!("{e:?}");
+        assert!(s.contains("Other"),      "Debug should include variant name: {s}");
+        assert!(s.contains("some error"), "Debug should include message: {s}");
+    }
+
+    #[test]
+    fn bundler_error_failed_op_is_error_trait() {
+        // Ensure BundlerError implements std::error::Error (required by eyre etc.)
+        let e: Box<dyn std::error::Error> = Box::new(BundlerError::FailedOp {
+            op_index: 0,
+            reason: "AA10".to_string(),
+        });
+        assert!(e.to_string().contains("AA10"));
+    }
+
+    // ── BatchSimOutcome ──────────────────────────────────────────────────────
+
+    #[test]
+    fn batch_sim_outcome_ok_debug() {
+        let o = BatchSimOutcome::Ok;
+        let s = format!("{o:?}");
+        assert!(s.contains("Ok"), "Debug of Ok variant: {s}");
+    }
+
+    #[test]
+    fn batch_sim_outcome_bad_op_fields() {
+        let o = BatchSimOutcome::BadOp {
+            index:  2,
+            reason: "AA25 invalid account nonce".to_string(),
+        };
+        match o {
+            BatchSimOutcome::BadOp { index, reason } => {
+                assert_eq!(index, 2);
+                assert_eq!(reason, "AA25 invalid account nonce");
+            }
+            other => panic!("expected BadOp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn batch_sim_outcome_rpc_error_carries_message() {
+        let o = BatchSimOutcome::RpcError("connection refused".to_string());
+        match o {
+            BatchSimOutcome::RpcError(msg) => assert_eq!(msg, "connection refused"),
+            other => panic!("expected RpcError, got {other:?}"),
+        }
+    }
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -113,8 +338,14 @@ impl BundlerService {
             .parse()
             .wrap_err("Invalid PRIVATE_KEY")?;
 
-        let provider: HttpProvider = ProviderBuilder::new()
-            .on_http(config.rpc_url.parse().wrap_err("Invalid RPC_URL")?);
+        let rpc_url = config.rpc_url.parse().wrap_err("Invalid RPC_URL")?;
+        let rpc_http = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .wrap_err("Failed to build RPC HTTP client")?;
+        let provider: HttpProvider =
+            RootProvider::new(RpcClient::new(Http::with_client(rpc_http, rpc_url), false));
 
         let paymaster = Arc::new(PaymasterSigner::new(&config)?);
         let provider  = Arc::new(provider);
@@ -165,6 +396,7 @@ impl BundlerService {
         Ok(result.predicted)
     }
 
+    #[allow(dead_code)]
     pub async fn get_nonce(&self, sender: Address) -> Result<U256> {
         let ep     = IEntryPoint::new(self.config.entry_point, self.provider.clone());
         let result = ep.getNonce(sender, U192::ZERO).call().await?;
@@ -200,7 +432,11 @@ impl BundlerService {
             1_500_000_000
         };
 
-        let max_fee = base_fee as u128 * 2 + priority_fee;
+        let max_fee = base_fee
+            .checked_mul(2)
+            .ok_or_else(|| eyre!("base_fee overflow: base_fee={base_fee}"))?
+            .checked_add(priority_fee)
+            .ok_or_else(|| eyre!("max_fee overflow: base_fee={base_fee} priority_fee={priority_fee}"))?;
         Ok((priority_fee, max_fee))
     }
 
@@ -268,13 +504,22 @@ impl BundlerService {
         // Reserve the next sequential UserOp nonce for this sender.
         // op_nonce_mgr serialises concurrent /sponsor calls so each gets a
         // distinct, monotonically-increasing nonce even before past ops confirm.
-        let (nonce_res, fees_res) = tokio::join!(
+        // Check sponsorshipActive in the same join — zero extra latency.
+        let pm = IPaymaster::new(self.config.paymaster, self.provider.clone());
+        let sponsorship_call = pm.sponsorshipActive();
+        let (nonce_res, fees_res, active_res) = tokio::join!(
             op_nonce_mgr.reserve(sender, &self.provider),
             self.get_gas_fees(),
+            sponsorship_call.call(),
         );
 
         let nonce = nonce_res.wrap_err("UserOp nonce reservation failed")?;
         let (priority_fee, max_fee) = fees_res.wrap_err("fee estimation failed")?;
+        match active_res {
+            Ok(r) if !r._0 => bail!("Paymaster sponsorship is not active"),
+            Err(e)         => warn!("Could not verify sponsorship status (proceeding): {e}"),
+            Ok(_)          => {}
+        }
 
         let call_data = self.build_call_data(calls);
 
@@ -305,11 +550,11 @@ impl BundlerService {
         let expiry = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs() as u32
-            + 600;
+            .as_secs()
+            .saturating_add(600);
 
         user_op.paymaster_and_data =
-            self.paymaster.sign_paymaster_data(&user_op, 0, expiry)?;
+            self.paymaster.sign_paymaster_data(&user_op, expiry, 0)?;
 
         let user_op_hash = compute_user_op_hash(
             &user_op,
@@ -412,8 +657,13 @@ impl BundlerService {
             Err(e) => {
                 let msg = e.to_string();
                 match parse_failed_op(&msg) {
-                    Some((idx, reason)) => BatchSimOutcome::BadOp { index: idx, reason },
-                    None                => BatchSimOutcome::RpcError(msg),
+                    Ok((idx, reason)) => BatchSimOutcome::BadOp { index: idx, reason },
+                    Err(BundlerError::FailedOp { op_index, reason }) => {
+                        // Typed FailedOp from the typed path (future-proof for
+                        // callers that construct BundlerError::FailedOp directly).
+                        BatchSimOutcome::BadOp { index: op_index, reason }
+                    }
+                    Err(BundlerError::Other(_)) => BatchSimOutcome::RpcError(msg),
                 }
             }
         }
@@ -439,8 +689,10 @@ impl BundlerService {
         let (priority_fee, max_fee) = self.get_gas_fees().await?;
 
         // Scale gas limit by batch size: base 3 M + 300 k per additional op.
-        let batch_extra   = (user_ops.len().saturating_sub(1)) as u128 * 300_000;
-        let gas_limit     = (HANDLE_OPS_GAS_LIMIT + batch_extra) as u64;
+        let batch_extra = (user_ops.len().saturating_sub(1)) as u128 * 300_000;
+        let total_gas   = HANDLE_OPS_GAS_LIMIT + batch_extra;
+        let gas_limit   = u64::try_from(total_gas)
+            .map_err(|_| eyre!("gas limit overflow: batch of {} ops totals {} gas (exceeds u64::MAX)", user_ops.len(), total_gas))?;
 
         // ── Critical section: allocate nonce, sign, broadcast ─────────────
         // The lock is held across the entire async [sign → broadcast] so no
@@ -489,7 +741,7 @@ impl BundlerService {
                 {
                     nonce_guard.resync().await;
                 }
-                Err(eyre!("handleOps send_raw_transaction failed"))
+                Err(e).wrap_err("handleOps send_raw_transaction failed")
             }
         }
         // nonce_guard dropped here — lock released
@@ -543,14 +795,14 @@ impl BundlerService {
     }
 
     /// Send plain ETH from the bundler signer to `to`.
+    ///
+    /// Acquires the nonce_manager mutex to prevent a nonce collision with a
+    /// concurrent do_submit_batch call — both paths share the same EOA signer.
     pub async fn send_eth(&self, to: Address, value: U256) -> Result<B256> {
-        let nonce = self
-            .provider
-            .get_transaction_count(self.signer_address())
-            .await
-            .wrap_err("get_transaction_count failed")?;
-
         let (priority_fee, max_fee) = self.get_gas_fees().await?;
+
+        let mut nonce_guard = self.nonce_manager.lock().await?;
+        let nonce = nonce_guard.nonce;
 
         let tx = TxEip1559 {
             chain_id:                 self.config.chain_id,
@@ -568,14 +820,40 @@ impl BundlerService {
             .sign_hash_sync(&tx.signature_hash())
             .wrap_err("sign failed")?;
         let envelope = TxEnvelope::Eip1559(tx.into_signed(sig));
-
         let encoded = envelope.encoded_2718();
 
-        let pending = self.provider
-            .send_raw_transaction(&encoded)
-            .await
-            .wrap_err("send_raw_transaction failed")?;
+        match self.provider.send_raw_transaction(&encoded).await {
+            Ok(pending) => {
+                nonce_guard.commit();
+                Ok(*pending.tx_hash())
+            }
+            Err(e) => {
+                let msg = e.to_string().to_lowercase();
+                if msg.contains("nonce")
+                    || msg.contains("replacement")
+                    || msg.contains("already known")
+                    || msg.contains("underpriced")
+                {
+                    nonce_guard.resync().await;
+                }
+                Err(e).wrap_err("send_eth send_raw_transaction failed")
+            }
+        }
+    }
+}
 
-        Ok(*pending.tx_hash())
+impl super::mempool::BatchSubmitter for BundlerService {
+    fn simulate_batch<'a>(
+        &'a self,
+        ops: &'a [PackedUserOperation],
+    ) -> impl std::future::Future<Output = BatchSimOutcome> + Send + 'a {
+        self.simulate_batch(ops)
+    }
+
+    fn submit_batch<'a>(
+        &'a self,
+        ops: &'a [PackedUserOperation],
+    ) -> impl std::future::Future<Output = eyre::Result<B256>> + Send + 'a {
+        self.submit_batch(ops)
     }
 }

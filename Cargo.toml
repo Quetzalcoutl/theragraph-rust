@@ -1,21 +1,25 @@
 [package]
-name = "theragraph-engine"
+name = "theragraph"
 version = "0.2.0"
 edition = "2021"
 description = "TheraGraph blockchain indexer and recommendation engine"
 authors = ["TheraGraph Team"]
 license = "MIT"
 repository = "https://github.com/theragraph/theragraph-rust"
-rust-version = "1.75"
+rust-version = "1.95"
 
 [lib]
 name = "theragraph"
 path = "src/lib.rs"
+# cdylib: needed by Rustler to produce a loadable .so/.dylib NIF
+# rlib:   preserves the normal Rust library for tests and binary targets
+crate-type = ["cdylib", "rlib"]
 
 
 [dependencies]
 # Async runtime - tokio with all features for production
 tokio = { version = "1.35", features = ["full", "tracing"] }
+# RS-03: TaskTracker lives in tokio_util::task (part of the rt feature).
 tokio-util = { version = "0.7", features = ["rt"] }
 
 # Ethereum - ethers with websocket support and TLS
@@ -39,8 +43,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
 
-# HTTP client with retry and timeout
-reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+# HTTP client — 0.12 uses hyper 1.x, matching axum 0.7 (DEP-01: eliminates split hyper 0.14+1.x dep tree)
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 
 # Logging and observability
 tracing = "0.1"
@@ -53,6 +57,7 @@ opentelemetry-otlp = { version = "0.14", optional = true }
 # Error handling
 anyhow = "1.0"
 thiserror = "1.0"
+async-trait = "0.1"
 
 # Environment and configuration
 dotenvy = "0.15"
@@ -89,6 +94,11 @@ alloy = { version = "0.8", features = [
 # Bundler receipt store — Redis for production, DashMap fallback
 redis = { version = "0.26", features = ["tokio-comp", "connection-manager", "aio"] }
 dashmap = "6"
+lru = "0.12"
+
+# RS-04: moka replaces the LruCache + outer AsyncMutex compute_locks bottleneck.
+# Sharded concurrent map with get_with() atomic get-or-insert — no outer lock needed.
+moka = { version = "0.12", features = ["future"] }
 
 # Error handling for bundler module (eyre — zero-cost, ergonomic)
 eyre = "0.6"
@@ -96,8 +106,28 @@ eyre = "0.6"
 # Byte utilities
 bytes = "1"
 
+# Rustler NIF: exposes pure-computation scoring + post-quantum crypto to the BEAM.
+# Loading is gated by otp_app, so it's a no-op unless the BEAM loads the shared lib.
+rustler = { version = "0.33", optional = true }
+
+# Post-quantum cryptography — ML-DSA-65 (NIST FIPS 204 final standard)
+# PQClean-backed pure-Rust bindings; no external liboqs needed.
+# NOTE: pqcrypto-dilithium is NIST Round 3 (incompatible encoding with FIPS 204).
+#       Client signs with @noble/post-quantum ml_dsa65 (FIPS 204) — must match.
+pqcrypto-mldsa = "0.1"
+pqcrypto-traits = "0.3"
+
+# Base64 encoding/decoding for HTTP crypto endpoints
+base64 = "0.22"
+
+# TA-01: constant-time byte comparison to prevent timing attacks on secret headers.
+subtle = "2"
+
 [features]
+# nif must be explicitly enabled when building the NIF (Mix/Rustler passes --features nif).
+# By default the standalone binary does NOT link against ERTS, so _enif_* symbols are absent.
 default = []
+nif = ["rustler"]
 telemetry = ["tracing-opentelemetry", "opentelemetry", "opentelemetry-otlp"]
 full = ["telemetry"]
 
@@ -113,7 +143,7 @@ debug = true
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true

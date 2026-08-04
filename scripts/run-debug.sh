@@ -15,8 +15,8 @@ echo "\nWorking dir: $(pwd)" >> "$LOG"
 ls -la >> "$LOG" 2>&1 || true
 
 # Run the engine and capture output
-echo "\n--- RUN /app/theragraph-engine ---" >> "$LOG"
-/app/theragraph-engine >> "$LOG" 2>&1 || RC=$?
+echo "\n--- RUN /app/theragraph ---" >> "$LOG"
+/app/theragraph >> "$LOG" 2>&1 || RC=$?
 RC=${RC:-0}
 echo "--- EXIT CODE: $RC ---" >> "$LOG"
 

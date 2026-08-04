@@ -18,13 +18,101 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, instrument};
 
+// ============================================================================
+// Transport abstraction — swap real Kafka for a mock in tests
+// ============================================================================
+
+/// One-message delivery seam above rdkafka.
+///
+/// A second adapter (MockTransport) lives in the test module below; that makes
+/// this a real seam — not a hypothetical one.
+pub trait SendTransport: Send + Sync {
+    fn deliver<'a>(
+        &'a self,
+        topic: &'a str,
+        key: &'a str,
+        payload: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::error::Result<(i32, i64)>> + Send + 'a>>;
+}
+
+/// Production adapter: wraps `rdkafka::FutureProducer`.
+pub struct RdkafkaTransport {
+    producer: Arc<FutureProducer>,
+    delivery_timeout: Duration,
+}
+
+impl SendTransport for RdkafkaTransport {
+    fn deliver<'a>(
+        &'a self,
+        topic: &'a str,
+        key: &'a str,
+        payload: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::error::Result<(i32, i64)>> + Send + 'a>> {
+        Box::pin(async move {
+            let record = FutureRecord::to(topic).key(key).payload(payload);
+            self.producer
+                .send(record, Timeout::After(self.delivery_timeout))
+                .await
+                .map_err(|(e, _)| crate::error::Error::Kafka {
+                    message: e.to_string().into(),
+                    source: Some(e),
+                })
+        })
+    }
+}
+
+/// Determines how send_event backs off between attempts.
+///
+/// Extracted from the inline retry loop so callers (tests) can inject
+/// zero-delay policies without sleeping real time.
+#[derive(Debug, Clone)]
+pub struct RetryPolicy {
+    pub max_attempts: u32,
+    pub base_backoff_ms: u64,
+}
+
+impl RetryPolicy {
+    pub fn new(max_attempts: u32, base_backoff_ms: u64) -> Self {
+        Self { max_attempts, base_backoff_ms }
+    }
+
+    /// Delay before retrying attempt `n` (1-based). Returns `None` when retries are exhausted.
+    pub fn backoff_for(&self, attempt: u32) -> Option<Duration> {
+        if attempt >= self.max_attempts {
+            return None;
+        }
+        let exp = 2u64.saturating_pow(attempt.saturating_sub(1));
+        let base = self.base_backoff_ms.saturating_mul(exp);
+        let jitter = rand::Rng::gen_range(&mut rand::thread_rng(), 0u64..100);
+        Some(Duration::from_millis(base.saturating_add(jitter)))
+    }
+}
+
+/// No-op adapter: discards all messages. Used by `KafkaProducer::noop()`.
+struct NoopTransport;
+
+impl SendTransport for NoopTransport {
+    fn deliver<'a>(
+        &'a self,
+        _topic: &'a str,
+        _key: &'a str,
+        _payload: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::error::Result<(i32, i64)>> + Send + 'a>> {
+        Box::pin(async { Ok((0, 0)) })
+    }
+}
+
 /// Kafka producer with batching and reliability features
 #[derive(Clone)]
 pub struct KafkaProducer {
-    producer: Arc<FutureProducer>,
+    /// None when Kafka is disabled — no rdkafka client or background threads created.
+    producer: Option<Arc<FutureProducer>>,
+    /// Delivery seam — send path goes through this transport.
+    transport: Arc<dyn SendTransport + Send + Sync>,
     config: Arc<KafkaProducerMetrics>,
     enabled: bool,
     /// How long we'll wait for a send to complete before timing out
+    #[allow(dead_code)]
     delivery_timeout: Duration,
     /// send retry behavior
     send_max_attempts: u32,
@@ -49,14 +137,10 @@ impl KafkaProducerMetrics {
 }
 
 impl KafkaProducer {
-    /// Helper to access send retries from config
-    fn config_send_max_attempts(&self) -> u32 {
-        self.send_max_attempts
-    }
-
-    fn config_send_backoff_base_ms(&self) -> u64 {
-        self.send_backoff_base_ms
-    }
+    #[allow(dead_code)]
+    fn config_send_max_attempts(&self) -> u32 { self.send_max_attempts }
+    #[allow(dead_code)]
+    fn config_send_backoff_base_ms(&self) -> u64 { self.send_backoff_base_ms }
 
     /// Create a new Kafka producer from configuration
     pub fn new(config: &KafkaConfig) -> Result<Self> {
@@ -71,6 +155,7 @@ impl KafkaProducer {
         // Build client config with additional resilience settings
         let mut cfg = ClientConfig::new();
         cfg.set("bootstrap.servers", &config.brokers)
+
             .set("client.id", "theragraph-engine")
             // Reliability
             .set("acks", &config.producer.acks)
@@ -121,10 +206,17 @@ impl KafkaProducer {
                 source: Some(e),
             })?;
 
+        let producer_arc = Arc::new(producer);
+        let transport = Arc::new(RdkafkaTransport {
+            producer: Arc::clone(&producer_arc),
+            delivery_timeout: config.producer.delivery_timeout,
+        });
+
         info!("Kafka producer created successfully");
 
         Ok(Self {
-            producer: Arc::new(producer),
+            producer: Some(producer_arc),
+            transport,
             config: Arc::new(KafkaProducerMetrics::new()),
             enabled: true,
             delivery_timeout: config.producer.delivery_timeout,
@@ -136,12 +228,9 @@ impl KafkaProducer {
     /// Create a no-op producer (when Kafka is disabled)
     pub fn noop() -> Self {
         Self {
-            producer: Arc::new(
-                ClientConfig::new()
-                    .set("bootstrap.servers", "localhost:9092")
-                    .create()
-                    .expect("Failed to create dummy producer"),
-            ),
+            // No rdkafka client at all — avoids background connect threads.
+            producer: None,
+            transport: Arc::new(NoopTransport),
             config: Arc::new(KafkaProducerMetrics::new()),
             enabled: false,
             delivery_timeout: Duration::from_secs(5),
@@ -160,6 +249,7 @@ impl KafkaProducer {
                 blockchain_events: "blockchain.events".to_string(),
                 user_actions: "user.actions".to_string(),
                 recommendations: "recommendations".to_string(),
+                notifications_priority: "notifications.priority".to_string(),
             },
             producer: crate::config::KafkaProducerConfig {
                 message_timeout: Duration::from_secs(5),
@@ -199,68 +289,58 @@ impl KafkaProducer {
 
         debug!("Sending event to topic '{}' with key '{}'", topic, key);
 
-        // Local retry loop with exponential backoff + jitter to handle transient broker/connectivity issues
-        let max_attempts = self.config_send_max_attempts();
-        let base_backoff = self.config_send_backoff_base_ms();
+        let policy = RetryPolicy::new(self.send_max_attempts, self.send_backoff_base_ms);
 
-        for attempt in 1..=max_attempts {
-            let record = FutureRecord::to(topic).key(key).payload(payload.as_str());
-            match self
-                .producer
-                .send(record, Timeout::After(self.delivery_timeout))
-                .await
-            {
+        for attempt in 1..=policy.max_attempts {
+            match self.transport.deliver(topic, key, payload.as_str()).await {
                 Ok((partition, offset)) => {
-                    debug!(
-                        "Message delivered to partition {} at offset {} (attempt {}/{})",
-                        partition,
-                        offset,
-                        attempt,
-                        max_attempts
-                    );
+                    debug!("Delivered to partition {partition} offset {offset} (attempt {attempt}/{})", policy.max_attempts);
                     self.config.messages_sent.fetch_add(1, Ordering::Relaxed);
-                    self.config
-                        .bytes_sent
-                        .fetch_add(payload_len as u64, Ordering::Relaxed);
+                    self.config.bytes_sent.fetch_add(payload_len as u64, Ordering::Relaxed);
                     return Ok(());
                 }
-                Err((err, _)) => {
+                Err(err) => {
                     self.config.messages_failed.fetch_add(1, Ordering::Relaxed);
-                    error!("Attempt {}/{} - Failed to deliver message: {:?}", attempt, max_attempts, err);
+                    error!("Attempt {attempt}/{} failed: {:?}", policy.max_attempts, err);
 
-                    // On terminal failure, return the error
-                    if attempt == max_attempts {
-                        // On final failure, fetch broker metadata for diagnostics and log it
-                        match self.producer.client().fetch_metadata(None, Timeout::After(Duration::from_secs(5))) {
-                            Ok(md) => {
-                                let brokers: Vec<String> = md.brokers().iter().map(|b| format!("{}:{}", b.host(), b.port())).collect();
-                                error!("Broker metadata on failure: brokers={:?}, topics_count={}", brokers, md.topics().len());
+                    match policy.backoff_for(attempt) {
+                        None => {
+                            if let Some(producer) = self.producer.as_ref() {
+                                match producer.client().fetch_metadata(None, Timeout::After(Duration::from_secs(5))) {
+                                    Ok(md) => {
+                                        let brokers: Vec<String> = md.brokers().iter().map(|b| format!("{}:{}", b.host(), b.port())).collect();
+                                        error!("Broker metadata on failure: brokers={brokers:?}, topics={}", md.topics().len());
+                                    }
+                                    Err(merr) => error!("Failed to fetch broker metadata: {merr:?}"),
+                                }
                             }
-                            Err(merr) => {
-                                error!("Failed to fetch broker metadata: {:?}", merr);
-                            }
+                            // Structured DLQ log — full payload preserved for manual replay.
+                            // During broker recovery: grep 'kafka.dlq=true' | jq to extract
+                            // all lost events and re-send them via the replay utility.
+                            error!(
+                                kafka.dlq           = true,
+                                kafka.topic         = topic,
+                                kafka.key           = key,
+                                kafka.payload       = %payload,
+                                kafka.attempts      = policy.max_attempts,
+                                kafka.final_error   = %err,
+                                "kafka_dlq: event undeliverable after {} attempts — logged for manual replay",
+                                policy.max_attempts
+                            );
+                            return Err(err);
                         }
-
-                        return Err(Error::Kafka {
-                            message: format!("Failed to send message after {} attempts: {}", max_attempts, err).into(),
-                            source: Some(err),
-                        });
+                        Some(delay) => {
+                            debug!("Backing off {}ms before attempt {}/{}", delay.as_millis(), attempt + 1, policy.max_attempts);
+                            tokio::time::sleep(delay).await;
+                        }
                     }
-
-                    // Exponential backoff with jitter
-                    let exp = 2u64.pow((attempt - 1) as u32);
-                    let mut backoff = base_backoff.saturating_mul(exp);
-                    // add up to 100ms of jitter
-                    let jitter = rand::random::<u64>() % 100;
-                    backoff = backoff.saturating_add(jitter);
-                    debug!("Backing off for {}ms before retrying (attempt {}/{})", backoff, attempt, max_attempts);
-                    tokio::time::sleep(Duration::from_millis(backoff)).await;
-                    // retry
                 }
             }
         }
 
-        unreachable!("send_event retry loop should return above")
+        // S30-12: unreachable! panics when max_attempts=0 (no iterations occur).
+        // Return a descriptive error instead so callers get a Result, not a panic.
+        Err(Error::KafkaProducerFailed { retries: 0 })
     }
 
     /// Send multiple events in a batch
@@ -275,30 +355,44 @@ impl KafkaProducer {
         }
 
         // Serialize all payloads first so they live long enough
-        let payloads: Vec<(String, String)> = events
-            .iter()
-            .map(|(key, event)| {
-                let payload = serde_json::to_string(event).unwrap_or_default();
-                (key.clone(), payload)
-            })
-            .collect();
-
-        let mut futures = Vec::with_capacity(payloads.len());
-
-        for (key, payload) in &payloads {
-            let record = FutureRecord::to(topic)
-                .key(key.as_str())
-                .payload(payload.as_str());
-            let future = self
-                .producer
-                .send(record, Timeout::After(Duration::from_secs(5)));
-            futures.push(future);
+        let mut payloads: Vec<(String, String)> = Vec::with_capacity(events.len());
+        for (key, event) in events {
+            let payload = serde_json::to_string(event).map_err(|e| {
+                crate::error::Error::InvalidFormat {
+                    message: format!("Failed to serialize event for key '{}': {}", key, e).into(),
+                }
+            })?;
+            payloads.push((key.clone(), payload));
         }
 
-        let mut errors = Vec::new();
-        for future in futures {
-            if let Err((err, _)) = future.await {
-                errors.push(err);
+        let policy = RetryPolicy::new(self.send_max_attempts, self.send_backoff_base_ms);
+        let mut errors: Vec<crate::error::Error> = Vec::with_capacity(payloads.len());
+
+        for (key, payload) in &payloads {
+            // TAG-S28-06: per-message retry with exponential backoff before DLQ log.
+            // send_event already retries at the transport layer, but send_batch had no
+            // retry sweep — a transient Kafka leader rebalance would permanently drop
+            // the whole batch.  Uses configured RetryPolicy instead of hardcoded 3 attempts.
+            let mut last_err: Option<crate::error::Error> = None;
+            for attempt in 1u32..=policy.max_attempts {
+                match self.transport.deliver(topic, key.as_str(), payload.as_str()).await {
+                    Ok(_) => { last_err = None; break; }
+                    Err(e) => {
+                        if let Some(delay) = policy.backoff_for(attempt) {
+                            debug!("send_batch retry {}/{} key='{}': {:?}", attempt, policy.max_attempts, key, e);
+                            tokio::time::sleep(delay).await;
+                        }
+                        last_err = Some(e);
+                    }
+                }
+            }
+            if let Some(e) = last_err {
+                // Structured DLQ log — full payload preserved for manual replay.
+                error!(
+                    "[send_batch DLQ] permanent failure key='{}' topic='{}' payload='{}': {:?}",
+                    key, topic, payload, e
+                );
+                errors.push(e);
             }
         }
 
@@ -311,10 +405,11 @@ impl KafkaProducer {
             self.config
                 .messages_failed
                 .fetch_add(errors.len() as u64, Ordering::Relaxed);
-            Err(Error::Kafka {
-                message: format!("{} messages failed to deliver", errors.len()).into(),
-                source: errors.into_iter().next(),
-            })
+            Err(errors.into_iter().next().unwrap_or_else(|| {
+                // SAFETY: we only enter this branch when errors is non-empty;
+                // the is_empty() check above guarantees at least one element.
+                unreachable!("errors non-empty but iterator yielded None")
+            }))
         }
     }
 
@@ -325,8 +420,11 @@ impl KafkaProducer {
         }
 
         info!("Flushing Kafka producer...");
-        self.producer.flush(Timeout::After(timeout)).ok();
-        info!("Kafka producer flushed");
+        let Some(producer) = self.producer.as_ref() else { return; };
+        match producer.flush(Timeout::After(timeout)) {
+            Ok(()) => info!("Kafka producer flushed"),
+            Err(e) => error!("Kafka flush failed — messages may be lost: {:?}", e),
+        }
     }
 
     /// Get producer statistics
@@ -335,7 +433,7 @@ impl KafkaProducer {
             messages_sent: self.config.messages_sent.load(Ordering::Relaxed),
             messages_failed: self.config.messages_failed.load(Ordering::Relaxed),
             bytes_sent: self.config.bytes_sent.load(Ordering::Relaxed),
-            in_flight: self.producer.in_flight_count() as u64,
+            in_flight: self.producer.as_ref().map(|p| p.in_flight_count() as u64).unwrap_or(0),
         }
     }
 
@@ -345,7 +443,7 @@ impl KafkaProducer {
             return true;
         }
         // Check if we can reach the broker
-        self.producer.in_flight_count() < 10000 // Arbitrary threshold
+        self.producer.as_ref().map_or(false, |p| p.in_flight_count() < 10000)
     }
 }
 
@@ -360,8 +458,7 @@ pub struct ProducerStats {
 
 impl Drop for KafkaProducer {
     fn drop(&mut self) {
-        if self.enabled && Arc::strong_count(&self.producer) == 1 {
-            // Last reference, flush before dropping
+        if self.enabled {
             self.flush(Duration::from_secs(5));
         }
     }
@@ -433,6 +530,62 @@ impl BlockchainEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test double: pre-queued responses, records calls for assertion.
+    pub struct MockTransport {
+        /// Each call pops the front response. Panics if empty (misconfigured test).
+        pub responses: std::sync::Mutex<std::collections::VecDeque<crate::error::Result<(i32, i64)>>>,
+        pub calls: std::sync::Mutex<Vec<(String, String, String)>>,
+    }
+
+    impl MockTransport {
+        pub fn succeeding(count: usize) -> Self {
+            Self {
+                responses: std::sync::Mutex::new(
+                    (0..count).map(|i| Ok((0i32, i as i64))).collect(),
+                ),
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        pub fn failing(count: usize, msg: &str) -> Self {
+            let msg = msg.to_string();
+            Self {
+                responses: std::sync::Mutex::new(
+                    (0..count)
+                        .map(|_| {
+                            Err(crate::error::Error::Internal {
+                                source: Some(anyhow::anyhow!("{}", msg.clone()).into()),
+                            })
+                        })
+                        .collect(),
+                ),
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl SendTransport for MockTransport {
+        fn deliver<'a>(
+            &'a self,
+            topic: &'a str,
+            key: &'a str,
+            payload: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::error::Result<(i32, i64)>> + Send + 'a>> {
+            let response = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("MockTransport: no more queued responses");
+            self.calls.lock().unwrap().push((
+                topic.to_string(),
+                key.to_string(),
+                payload.to_string(),
+            ));
+            Box::pin(async move { response })
+        }
+    }
 
     #[test]
     fn test_blockchain_event() {

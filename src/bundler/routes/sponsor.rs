@@ -2,12 +2,17 @@
 
 use axum::{extract::State, http::StatusCode, Json};
 use serde_json::{json, Value};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::bundler::{
     state::BundlerState,
     types::{SerializedUserOp, SponsorRequest},
 };
+
+/// Maximum calls per sponsored UserOp — prevents gas exhaustion.
+const MAX_CALLS: usize = 50;
+/// Maximum bytes per call's data field — prevents paymaster treasury drain.
+const MAX_CALL_DATA: usize = 65_536;
 
 pub async fn handler(
     State(state): State<BundlerState>,
@@ -19,9 +24,10 @@ pub async fn handler(
             Some(owner) => match state.bundler.get_smart_account_address(owner).await {
                 Ok(addr) => addr,
                 Err(e)   => {
+                    error!("[sponsor] address lookup failed: {e}");
                     return (
                         StatusCode::BAD_REQUEST,
-                        Json(json!({ "error": format!("Address lookup failed: {e}") })),
+                        Json(json!({ "error": "Invalid owner address or account not found" })),
                     )
                 }
             },
@@ -38,6 +44,40 @@ pub async fn handler(
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "calls array is required" })),
+        );
+    }
+
+    if body.calls.len() > MAX_CALLS {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("Too many calls (max {MAX_CALLS})") })),
+        );
+    }
+
+    for call in &body.calls {
+        if call.data.len() > MAX_CALL_DATA {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("call.data exceeds maximum of {MAX_CALL_DATA} bytes") })),
+            );
+        }
+    }
+
+    // ── ERC-7562 Reputation check ─────────────────────────────────────────
+    // Block senders whose on-chain failure rate exceeds the configured threshold.
+    // This is the primary defence against "Simulation Collision" treasury drain:
+    // the check happens before signing, so a throttled sender costs us nothing.
+    if state.reputation.is_throttled(sender) {
+        warn!(
+            sender = %sender,
+            failures = state.reputation.failure_count(sender),
+            "Rejected /sponsor for throttled sender"
+        );
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({
+                "error": "Sender temporarily throttled due to repeated on-chain execution failures. Try again later."
+            })),
         );
     }
 
@@ -62,7 +102,7 @@ pub async fn handler(
             error!("[sponsor] {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
+                Json(json!({ "error": "Failed to build sponsored UserOp" })),
             )
         }
     }

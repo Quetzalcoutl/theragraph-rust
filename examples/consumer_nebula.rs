@@ -37,7 +37,29 @@ fn dedupe_events(events: Vec<Event>) -> Vec<Event> {
     out
 }
 
+/// Rejects strings that can break nGQL double-quoted VID literals.
+/// A VID like `0xabc"; DROP SPACE theragraph; //` would terminate the
+/// string and inject arbitrary statements into the multi-statement batch.
+fn is_safe_vid(s: &str) -> bool {
+    if s.is_empty() || s.len() > 128 {
+        return false;
+    }
+    !s.contains('"') && !s.contains(';') && !s.contains('\\') && !s.chars().any(|c| c.is_control())
+}
+
 fn build_ngql_for_event(e: &Event) -> Option<String> {
+    // NEBULA-001: validate all fields before interpolation into nGQL strings.
+    if !is_safe_vid(&e.actor_id) || !is_safe_vid(&e.event_id) {
+        eprintln!("warn: skipping event {} — actor_id or event_id failed VID safety check", e.event_id);
+        return None;
+    }
+    if let Some(t) = &e.target_id {
+        if !is_safe_vid(t) {
+            eprintln!("warn: skipping event {} — target_id failed VID safety check", e.event_id);
+            return None;
+        }
+    }
+
     match e.event_type.as_str() {
         "follow" => {
             let a = &e.actor_id;

@@ -54,8 +54,8 @@ impl PaymasterSigner {
     pub fn sign_paymaster_data(
         &self,
         user_op: &PackedUserOperation,
-        valid_until: u32,
-        valid_after: u32,
+        valid_until: u64,
+        valid_after: u64,
     ) -> Result<Bytes> {
         let hash: B256 = compute_paymaster_hash(
             user_op,
@@ -73,10 +73,10 @@ impl PaymasterSigner {
         out.extend_from_slice(&self.pm_verification_gas_limit.to_be_bytes());
         out.extend_from_slice(&self.pm_post_op_gas_limit.to_be_bytes());
 
-        let vu = (valid_until as u64).to_be_bytes();
+        let vu = valid_until.to_be_bytes();
         out.extend_from_slice(&vu[2..]);
 
-        let va = (valid_after as u64).to_be_bytes();
+        let va = valid_after.to_be_bytes();
         out.extend_from_slice(&va[2..]);
 
         out.extend_from_slice(&sig_bytes);

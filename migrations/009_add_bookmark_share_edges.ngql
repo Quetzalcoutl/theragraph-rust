@@ -1,0 +1,34 @@
+-- TAG-S29-04: Add bookmark and share edge types to the theragraph Nebula space.
+--
+-- Bookmarks and shares are the two highest-intent user signals; they were absent
+-- from every FoF recommendation query prior to this migration.
+--
+-- bookmarked: user → post.  IF NOT EXISTS on insert (toggle-safe).
+--   Properties:
+--     event_id     string   — tx_hash or UUID of the originating blockchain event
+--     bookmarked_at timestamp — when the user bookmarked the post
+--
+-- shared: user → post.  IF NOT EXISTS on insert (replay-safe).
+--   Properties:
+--     event_id  string   — tx_hash of the ContentShared event
+--     shared_at timestamp — when the user shared the post
+--     weight    double   — recommendation signal weight (default 1.5)
+--
+-- Apply with:
+--   nebula-console -u <user> -p <pass> -addr <storaged>:9559
+--   :play 009_add_bookmark_share_edges.ngql
+--
+-- or via nGQL execute in the Rust migration runner.
+
+USE theragraph;
+
+CREATE EDGE IF NOT EXISTS bookmarked (
+  event_id     string,
+  bookmarked_at timestamp
+);
+
+CREATE EDGE IF NOT EXISTS shared (
+  event_id  string,
+  shared_at timestamp,
+  weight    double DEFAULT 1.5
+);

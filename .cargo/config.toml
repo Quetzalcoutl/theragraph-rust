@@ -1,0 +1,23 @@
+[build]
+# Fix "object file was built for newer macOS version (14.2) than being linked (10.12)" linker error.
+# Rust's default MACOSX_DEPLOYMENT_TARGET is 10.12, but c-kzg, blst, and rdkafka-sys are
+# pre-built against the host macOS 14.x SDK.  Setting the deployment target via a direct
+# linker flag (more reliable than [env] which may not propagate to cc/clang in all setups).
+
+[target.x86_64-apple-darwin]
+rustflags = [
+  "-C", "link-arg=-mmacosx-version-min=14.0",
+  # Allow _enif_* symbols to be unresolved at dylib link time.
+  # These are provided by the BEAM (ERTS) at runtime when the NIF is dlopen'd.
+  # Without this flag, the macOS linker errors on undefined _enif_alloc_binary etc.
+  # This flag is a no-op for the binary target (cargo run) since nif feature is off.
+  "-C", "link-arg=-undefined",
+  "-C", "link-arg=dynamic_lookup",
+]
+
+[env]
+MACOSX_DEPLOYMENT_TARGET = "14.0"
+# Tell sqlx compile-time macros to use .sqlx cached queries instead of connecting
+# to DATABASE_URL. Required for `cargo build` to work without a live postgres.
+# The .sqlx/ directory in this repo contains all pre-generated query metadata.
+SQLX_OFFLINE = "true"

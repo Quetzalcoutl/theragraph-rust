@@ -3,13 +3,12 @@
 //! ByteGraph-inspired metrics tracking for recommendation quality and performance.
 //! These utilities are used for monitoring and debugging recommendation quality.
 
-#![allow(dead_code)]  // Metrics are used selectively during profiling
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Instant;
 
 /// Metrics for a single recommendation request
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecommendationMetrics {
     pub user_address: String,
@@ -68,14 +67,16 @@ impl Default for RecommendationMetrics {
 /// Performance timer for tracking operation duration
 pub struct PerformanceTimer {
     start: Instant,
-    label: String,
+    // RS-14: &'static str avoids two heap allocations (alloc + dealloc) per
+    // recommendation request — all six call sites in engine.rs pass string literals.
+    label: &'static str,
 }
 
 impl PerformanceTimer {
-    pub fn new(label: &str) -> Self {
+    pub fn new(label: &'static str) -> Self {
         Self {
             start: Instant::now(),
-            label: label.to_string(),
+            label,
         }
     }
     
@@ -83,14 +84,15 @@ impl PerformanceTimer {
         self.start.elapsed().as_millis() as u64
     }
     
+    #[allow(dead_code)]
     pub fn log_if_slow(&self, threshold_ms: u64) {
         let elapsed = self.elapsed_ms();
         if elapsed > threshold_ms {
             tracing::warn!(
-                "⚠️ Slow operation: {} took {}ms (threshold: {}ms)",
-                self.label,
-                elapsed,
-                threshold_ms
+                label = self.label,
+                elapsed_ms = elapsed,
+                threshold_ms,
+                "Slow operation exceeded threshold"
             );
         }
     }
@@ -99,7 +101,7 @@ impl PerformanceTimer {
 impl Drop for PerformanceTimer {
     fn drop(&mut self) {
         let elapsed = self.elapsed_ms();
-        tracing::debug!("⏱️ {} completed in {}ms", self.label, elapsed);
+        tracing::debug!(label = self.label, elapsed_ms = elapsed, "timer completed");
     }
 }
 
@@ -144,6 +146,7 @@ impl QualityAnalyzer {
     }
     
     /// Detect potential issues with recommendation quality
+    #[allow(dead_code)]
     pub fn detect_issues(metrics: &RecommendationMetrics) -> Vec<String> {
         let mut issues = Vec::new();
         

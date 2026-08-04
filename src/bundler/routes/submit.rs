@@ -37,6 +37,25 @@ pub async fn handler(
         );
     }
 
+    // Per-field size caps — prevent oversized UserOps from consuming bundler resources.
+    const MAX_INIT_CODE: usize = 131_072;       // 128 KiB
+    const MAX_CALL_DATA: usize = 131_072;       // 128 KiB
+    const MAX_SIGNATURE: usize = 4_096;         // 4 KiB
+    const MAX_PAYMASTER_AND_DATA: usize = 4_096;
+
+    if raw.init_code.len() > MAX_INIT_CODE {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "initCode exceeds 128 KiB" })));
+    }
+    if raw.call_data.len() > MAX_CALL_DATA {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "callData exceeds 128 KiB" })));
+    }
+    if raw.signature.len() > MAX_SIGNATURE {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "signature exceeds 4 KiB" })));
+    }
+    if raw.paymaster_and_data.len() > MAX_PAYMASTER_AND_DATA {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "paymasterAndData exceeds 4 KiB" })));
+    }
+
     let user_op: PackedUserOperation = raw.into();
     let user_op_hash = compute_user_op_hash(
         &user_op,

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT DISTINCT liker_address as \"address!\" FROM likes WHERE timestamp > $1\n        UNION\n        SELECT DISTINCT commenter_address as \"address!\" FROM comments WHERE timestamp > $1\n        UNION\n        SELECT DISTINCT buyer_address as \"address!\" FROM purchases WHERE timestamp > $1\n        UNION\n        SELECT DISTINCT s.address as \"address!\"\n        FROM follows f\n        JOIN social_users s ON f.follower_id = s.id\n        WHERE f.inserted_at > $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "address!",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamp"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a0e5fec69d50c4092042223548981b3ffcf8d54052aeae411f2aaa46545490fd"
+}

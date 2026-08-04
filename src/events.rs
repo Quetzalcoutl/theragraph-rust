@@ -117,7 +117,7 @@ pub static EVENT_SIGNATURES: Lazy<HashMap<H256, EventType>> = Lazy::new(|| {
         EventType::FlixDeleted,
     );
 
-    // === TheraFriends Events ===
+    // === TheraFriendz Events ===
     m.insert(
         keccak256_signature("Followed(address,address,string,string,uint256)"),
         EventType::Followed,
@@ -149,7 +149,7 @@ pub static EVENT_SIGNATURES: Lazy<HashMap<H256, EventType>> = Lazy::new(|| {
         EventType::EarningsWithdrawn,
     );
 
-    // Newer TheraFriends social events (UserFollowed/UserUnfollowed)
+    // Newer TheraFriendz social events (UserFollowed/UserUnfollowed)
     m.insert(
         keccak256_signature("UserFollowed(address,address,uint256)"),
         EventType::UserFollowed,
@@ -189,7 +189,7 @@ pub static EVENT_SIGNATURES: Lazy<HashMap<H256, EventType>> = Lazy::new(|| {
         EventType::RoyaltyDistributed,
     );
 
-    // Unified TheraFriends content & social events (new contract)
+    // Unified TheraFriendz content & social events (new contract)
     m.insert(
         h256_from_hex("0xe913bf0f321ec4538e6e03894963538ad29d5bc7610699f655b8d4be77ef3c31"),
         EventType::ContentMinted,
@@ -271,14 +271,6 @@ pub static EVENT_SIGNATURES: Lazy<HashMap<H256, EventType>> = Lazy::new(|| {
         EventType::EarningsWithdrawn,
     );
     m.insert(
-        h256_from_hex("0xe913bf0f321ec4538e6e03894963538ad29d5bc7610699f655b8d4be77ef3c31"),
-        EventType::ContentMinted,
-    );
-    m.insert(
-        h256_from_hex("0x80c2e061ec45ed7331a60555bbadc701bd26c6335bcd10063bc2fe287d040f2f"),
-        EventType::ContentCopyMinted,
-    );
-    m.insert(
         h256_from_hex("0xc83ca0840994260dfd9b90ce0f552ac8a0424cae524b6dee6b476a78f6fbdc30"),
         EventType::BurnedContentRevenue,
     );
@@ -327,8 +319,16 @@ fn keccak256_signature(sig: &str) -> H256 {
 
 /// Helper function to create H256 from hex string
 fn h256_from_hex(hex: &str) -> H256 {
-    let bytes = hex::decode(&hex[2..]).unwrap();
-    H256::from_slice(&bytes)
+    if hex.len() < 2 {
+        return H256::zero();
+    }
+    match hex::decode(&hex[2..]) {
+        Ok(bytes) if bytes.len() == 32 => H256::from_slice(&bytes),
+        _ => {
+            tracing::warn!("h256_from_hex: invalid hex input (len={})", hex.len());
+            H256::zero()
+        }
+    }
 }
 
 // ============================================================================
@@ -382,7 +382,7 @@ pub enum EventType {
     UserBlocked,
     UserUnblocked,
 
-    // Unified TheraFriends content & social events
+    // Unified TheraFriendz content & social events
     ContentMinted,
     ContentCopyMinted,
     ContentLiked,
@@ -521,6 +521,41 @@ impl EventType {
         )
     }
 
+    /// Check if this event triggers a user push notification.
+    ///
+    /// These events are routed to `notifications.priority` Kafka topic
+    /// (batch_size=1, timeout=0ms consumer on the Elixir side) so they are
+    /// never queued behind analytics bursts like ContentMinted × 200.
+    ///
+    /// Covers: unified TheraFriendz events + legacy per-contract events.
+    pub fn is_notification_event(&self) -> bool {
+        matches!(
+            self,
+            // Unified TheraFriendz contract
+            EventType::ContentLiked
+                | EventType::ContentCommented
+                | EventType::ContentCopyMinted
+                | EventType::UserFollowed
+                // Legacy per-contract likes
+                | EventType::SnapLiked
+                | EventType::ArtLiked
+                | EventType::MusicLiked
+                | EventType::FlixLiked
+                // Legacy per-contract comments
+                | EventType::SnapCommented
+                | EventType::ArtCommented
+                | EventType::MusicCommented
+                | EventType::FlixCommented
+                // Legacy per-contract purchases (trigger copy_purchased notification)
+                | EventType::SnapBoughtAndMinted
+                | EventType::ArtBoughtAndMinted
+                | EventType::MusicBoughtAndMinted
+                | EventType::FlixBoughtAndMinted
+                // Social follows
+                | EventType::Followed
+        )
+    }
+
     /// Check if this is a social event
     pub fn is_social(&self) -> bool {
         matches!(
@@ -547,9 +582,17 @@ impl EventType {
         )
     }
 
-    /// Get Kafka topic for this event type
+    /// Get Kafka topic for this event type.
+    ///
+    /// Three-tier routing:
+    /// 1. `notifications.priority` — events that trigger user pushes.
+    ///    Consumed immediately (batch_size=1) by PriorityKafkaConsumer.
+    /// 2. `user.actions` — social/profile events for recommendations.
+    /// 3. `blockchain.events` — analytics, mints, admin events.
     pub fn kafka_topic(&self) -> &'static str {
-        if self.is_social() {
+        if self.is_notification_event() {
+            "notifications.priority"
+        } else if self.is_social() {
             "user.actions"
         } else {
             "blockchain.events"
@@ -595,6 +638,8 @@ pub struct ParsedEvent {
     /// Raw log data (hex encoded)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_data: Option<String>,
+    /// Kafka topic this event should be routed to (set at parse time from EventType::kafka_topic())
+    pub kafka_topic: &'static str,
 }
 
 /// Decoded event data for different event types
@@ -873,7 +918,12 @@ pub fn parse_log(log: &Log, fallback_contract_type: &str) -> Result<ParsedEvent>
                 1 => "flix".to_string(),
                 2 => "music".to_string(),
                 3 => "snap".to_string(),
-                _ => contract_type,
+                unknown => {
+                    tracing::warn!(
+                        "ContentMinted: unknown contentType={unknown}, keeping contract_type={contract_type}"
+                    );
+                    contract_type
+                }
             };
         }
     }
@@ -889,6 +939,7 @@ pub fn parse_log(log: &Log, fallback_contract_type: &str) -> Result<ParsedEvent>
     let log_index = log.log_index.map(|i| i.as_u64()).unwrap_or(0);
 
     Ok(ParsedEvent {
+        kafka_topic: event_type.kafka_topic(),
         event_type: event_type.to_string(),
         contract_address: format!("{:?}", log.address),
         contract_type,
@@ -966,7 +1017,7 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
             _ => IndexedParamType::Bytes32,
         },
 
-        // Unified TheraFriends events - map indexed params per event
+        // Unified TheraFriendz events - map indexed params per event
         EventType::ContentMinted => match param_index {
             0 => IndexedParamType::Uint256, // tokenId
             1 => IndexedParamType::Address, // creator
@@ -1128,14 +1179,131 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
             _ => IndexedParamType::Bytes32,
         },
 
+        // BurnedContentRevenue(uint256 indexed tokenId, uint256 amount, uint256 timestamp)
+        EventType::BurnedContentRevenue => match param_index {
+            0 => IndexedParamType::Uint256, // tokenId
+            _ => IndexedParamType::Bytes32,
+        },
+
+        // TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury, uint256 timestamp)
+        EventType::TreasuryUpdated => match param_index {
+            0 => IndexedParamType::Address, // oldTreasury
+            1 => IndexedParamType::Address, // newTreasury
+            _ => IndexedParamType::Bytes32,
+        },
+
         // Default to bytes32 for unknown types (only types not handled above)
         EventType::PricesUpdated
         | EventType::ContentRequirementsUpdated
-        | EventType::BurnedContentRevenue
-        | EventType::TreasuryUpdated
         | EventType::DailyLimitsUpdated => IndexedParamType::Bytes32,
         EventType::Unknown => IndexedParamType::Bytes32,
     }
+}
+
+// ============================================================================
+// ABI decode helpers
+// ============================================================================
+
+/// Decode a `Token::Uint` at position `idx` as its decimal string.
+fn decode_uint(tokens: &[ethers::abi::Token], idx: usize) -> Option<String> {
+    tokens.get(idx).and_then(|t| {
+        if let ethers::abi::Token::Uint(u) = t { Some(u.to_string()) } else { None }
+    })
+}
+
+/// Decode a `Token::String` at position `idx`, cloning the inner value.
+fn decode_str(tokens: &[ethers::abi::Token], idx: usize) -> Option<String> {
+    tokens.get(idx).and_then(|t| {
+        if let ethers::abi::Token::String(s) = t { Some(s.clone()) } else { None }
+    })
+}
+
+/// Decode a `Token::Bool` at position `idx`, copying the inner value.
+fn decode_bool(tokens: &[ethers::abi::Token], idx: usize) -> Option<bool> {
+    tokens.get(idx).and_then(|t| {
+        if let ethers::abi::Token::Bool(b) = t { Some(*b) } else { None }
+    })
+}
+
+/// Decode a `Token::Address` at position `idx` as a `0x`-prefixed hex string.
+fn decode_addr_token(tokens: &[ethers::abi::Token], idx: usize) -> Option<String> {
+    tokens.get(idx).and_then(|t| {
+        if let ethers::abi::Token::Address(a) = t {
+            Some(format!("0x{}", hex::encode(a.as_bytes())))
+        } else {
+            None
+        }
+    })
+}
+
+/// Read two consecutive raw U256 fields from `data` at byte offsets 0 and 32.
+/// Returns `(field_at_0, field_at_32)` as decimal strings; each falls back to
+/// `String::new()` when `data` is too short to contain that word.
+///
+/// Used by events whose non-indexed data layout is `[amount (32 bytes), timestamp (32 bytes)]`.
+#[inline]
+fn read_amount_timestamp(data: &Bytes) -> (String, String) {
+    let amount = if data.len() >= 32 {
+        U256::from_big_endian(&data[0..32]).to_string()
+    } else {
+        String::new()
+    };
+    let timestamp = if data.len() >= 64 {
+        U256::from_big_endian(&data[32..64]).to_string()
+    } else {
+        String::new()
+    };
+    (amount, timestamp)
+}
+
+/// ABI-decode `[Uint(256), Uint(256)]` from `data` and return `(field_0, field_1)`.
+///
+/// Returns `None` when `data` is empty (caller should supply empty-data defaults).
+/// Returns `Some(Err(hex))` when the ABI decoder fails (caller wraps as `Raw`).
+/// Returns `Some(Ok((a, b)))` on success.
+#[inline]
+fn decode_two_uint256(
+    data: &Bytes,
+) -> Option<std::result::Result<(String, String), String>> {
+    if data.is_empty() {
+        return None;
+    }
+    Some(
+        ethers::abi::decode(
+            &[ethers::abi::ParamType::Uint(256), ethers::abi::ParamType::Uint(256)],
+            &data.0,
+        )
+        .map(|tokens| {
+            let a = decode_uint(&tokens, 0).unwrap_or_default();
+            let b = decode_uint(&tokens, 1).unwrap_or_default();
+            (a, b)
+        })
+        .map_err(|_| format!("0x{}", hex::encode(data))),
+    )
+}
+
+/// ABI-decode `[String, Uint(256)]` from `data` and return `(string_field, uint_field)`.
+///
+/// Same tri-state return convention as `decode_two_uint256`.
+#[inline]
+fn decode_str_uint256(
+    data: &Bytes,
+) -> Option<std::result::Result<(String, String), String>> {
+    if data.is_empty() {
+        return None;
+    }
+    Some(
+        ethers::abi::decode(
+            &[ethers::abi::ParamType::String, ethers::abi::ParamType::Uint(256)],
+            &data.0,
+        )
+        .map(|tokens| {
+            let s = decode_str(&tokens, 0).unwrap_or_default();
+            let u = decode_uint(&tokens, 1).unwrap_or_default();
+            (s, u)
+        })
+        .map_err(|_| format!("0x{}", hex::encode(data))),
+    )
 }
 
 /// Parse event-specific data based on event type
@@ -1271,24 +1439,10 @@ fn parse_event_data(
                     &data.0,
                 ) {
                     Ok(tokens) => {
-                        use ethers::abi::Token;
-                        let comment_id = tokens
-                            .get(0)
-                            .and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None })
-                            .unwrap_or_default();
-                        let comment = tokens
-                            .get(1)
-                            .and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None })
-                            .unwrap_or_default();
-                        let content_type = tokens
-                            .get(2)
-                            .and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None })
-                            .unwrap_or_default();
-                        let timestamp = tokens
-                            .get(3)
-                            .and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None })
-                            .unwrap_or_default();
-
+                        let comment_id    = decode_uint(&tokens, 0).unwrap_or_default();
+                        let comment       = decode_str(&tokens, 1).unwrap_or_default();
+                        let content_type  = decode_uint(&tokens, 2).unwrap_or_default();
+                        let timestamp     = decode_uint(&tokens, 3).unwrap_or_default();
                         Some(ParsedEventData::Commented { token_id, comment_id, commenter, comment, content_type, timestamp })
                     }
                     Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
@@ -1410,24 +1564,14 @@ fn parse_event_data(
             // RoyaltyDistributed(uint256 indexed tokenId, address indexed recipient, uint256 amount, uint256 timestamp)
             let token_id = indexed_params.first().cloned().unwrap_or_default();
             let recipient = indexed_params.get(1).cloned().unwrap_or_default();
-            let amount = if data.len() >= 32 {
-                U256::from_big_endian(&data[0..32]).to_string()
-            } else { String::new() };
-            let timestamp = if data.len() >= 64 {
-                U256::from_big_endian(&data[32..64]).to_string()
-            } else { String::new() };
+            let (amount, timestamp) = read_amount_timestamp(data);
             Some(ParsedEventData::RoyaltyDistributed { token_id, recipient, amount, timestamp })
         }
 
         EventType::EarningsWithdrawn => {
             // EarningsWithdrawn(address indexed user, uint256 amount, uint256 timestamp)
             let user = indexed_params.first().cloned().unwrap_or_default();
-            let amount = if data.len() >= 32 {
-                U256::from_big_endian(&data[0..32]).to_string()
-            } else { String::new() };
-            let timestamp = if data.len() >= 64 {
-                U256::from_big_endian(&data[32..64]).to_string()
-            } else { String::new() };
+            let (amount, timestamp) = read_amount_timestamp(data);
             Some(ParsedEventData::EarningsWithdrawn { user, amount, timestamp })
         }
 
@@ -1448,13 +1592,12 @@ fn parse_event_data(
                     &data.0,
                 ) {
                     Ok(tokens) => {
-                        use ethers::abi::Token;
-                        let copy = tokens.get(0).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        let like = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        let comment = tokens.get(2).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        let follow = tokens.get(3).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        let fee = tokens.get(4).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        let timestamp = tokens.get(5).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let copy      = decode_uint(&tokens, 0).unwrap_or_default();
+                        let like      = decode_uint(&tokens, 1).unwrap_or_default();
+                        let comment   = decode_uint(&tokens, 2).unwrap_or_default();
+                        let follow    = decode_uint(&tokens, 3).unwrap_or_default();
+                        let fee       = decode_uint(&tokens, 4).unwrap_or_default();
+                        let timestamp = decode_uint(&tokens, 5).unwrap_or_default();
                         Some(ParsedEventData::PricesUpdated { copy, like, comment, follow, fee, timestamp })
                     }
                     Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
@@ -1477,10 +1620,9 @@ fn parse_event_data(
             } else {
                 match ethers::abi::decode(&[ethers::abi::ParamType::Uint(64), ethers::abi::ParamType::Uint(64), ethers::abi::ParamType::Uint(256)], &data.0) {
                     Ok(tokens) => {
-                        use ethers::abi::Token;
-                        let max_posts = tokens.get(0).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        let max_follows = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        let timestamp = tokens.get(2).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let max_posts   = decode_uint(&tokens, 0).unwrap_or_default();
+                        let max_follows = decode_uint(&tokens, 1).unwrap_or_default();
+                        let timestamp   = decode_uint(&tokens, 2).unwrap_or_default();
                         Some(ParsedEventData::DailyLimitsUpdated { max_posts, max_follows, timestamp })
                     }
                     Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
@@ -1495,12 +1637,11 @@ fn parse_event_data(
             } else {
                 match ethers::abi::decode(&[ethers::abi::ParamType::Uint(128), ethers::abi::ParamType::Uint(128), ethers::abi::ParamType::Uint(128), ethers::abi::ParamType::Uint(128), ethers::abi::ParamType::Uint(256)], &data.0) {
                     Ok(tokens) => {
-                        use ethers::abi::Token;
-                        let snap = tokens.get(0).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        let art = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        let music = tokens.get(2).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        let flix = tokens.get(3).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        let timestamp = tokens.get(4).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let snap      = decode_uint(&tokens, 0).unwrap_or_default();
+                        let art       = decode_uint(&tokens, 1).unwrap_or_default();
+                        let music     = decode_uint(&tokens, 2).unwrap_or_default();
+                        let flix      = decode_uint(&tokens, 3).unwrap_or_default();
+                        let timestamp = decode_uint(&tokens, 4).unwrap_or_default();
                         Some(ParsedEventData::ContentRequirementsUpdated { snap, art, music, flix, timestamp })
                     }
                     Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
@@ -1511,8 +1652,7 @@ fn parse_event_data(
         EventType::BurnedContentRevenue => {
             // BurnedContentRevenue(uint256 indexed tokenId, uint256 amount, uint256 timestamp)
             let token_id = indexed_params.first().cloned().unwrap_or_default();
-            let amount = if data.len() >= 32 { U256::from_big_endian(&data[0..32]).to_string() } else { String::new() };
-            let timestamp = if data.len() >= 64 { U256::from_big_endian(&data[32..64]).to_string() } else { String::new() };
+            let (amount, timestamp) = read_amount_timestamp(data);
             Some(ParsedEventData::BurnedContentRevenue { token_id, amount, timestamp })
         }
 
@@ -1541,20 +1681,9 @@ fn parse_event_data(
                     &data.0,
                 ) {
                     Ok(tokens) => {
-                        use ethers::abi::Token;
-                        let follower_username = tokens
-                            .get(0)
-                            .and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None })
-                            .unwrap_or_default();
-                        let followed_username = tokens
-                            .get(1)
-                            .and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None })
-                            .unwrap_or_default();
-                        let timestamp = tokens
-                            .get(2)
-                            .and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None })
-                            .unwrap_or_default();
-
+                        let follower_username = decode_str(&tokens, 0).unwrap_or_default();
+                        let followed_username = decode_str(&tokens, 1).unwrap_or_default();
+                        let timestamp         = decode_uint(&tokens, 2).unwrap_or_default();
                         Some(ParsedEventData::Followed { follower, followed, follower_username, followed_username, timestamp })
                     }
                     Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
@@ -1598,28 +1727,11 @@ fn parse_event_data(
                     &data.0,
                 ) {
                     Ok(tokens) => {
-                        use ethers::abi::Token;
-                        let username = tokens
-                            .get(0)
-                            .and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None })
-                            .unwrap_or_default();
-                        let profile_hash = tokens
-                            .get(1)
-                            .and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None })
-                            .unwrap_or_default();
-                        let bio = tokens
-                            .get(2)
-                            .and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None })
-                            .unwrap_or_default();
-                        let website = tokens
-                            .get(3)
-                            .and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None })
-                            .unwrap_or_default();
-                        let timestamp = tokens
-                            .get(4)
-                            .and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None })
-                            .unwrap_or_default();
-
+                        let username      = decode_str(&tokens, 0).unwrap_or_default();
+                        let profile_hash  = decode_str(&tokens, 1).unwrap_or_default();
+                        let bio           = decode_str(&tokens, 2).unwrap_or_default();
+                        let website       = decode_str(&tokens, 3).unwrap_or_default();
+                        let timestamp     = decode_uint(&tokens, 4).unwrap_or_default();
                         Some(ParsedEventData::ProfileUpdatedExtended { username, profile_hash, bio, website, timestamp })
                     }
                     Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
@@ -1630,36 +1742,20 @@ fn parse_event_data(
         // UsernameRegistered(address indexed user, string username, uint256 timestamp)
         EventType::UsernameRegistered => {
             let user = indexed_params.first().cloned().unwrap_or_default();
-            if data.is_empty() {
-                Some(ParsedEventData::UsernameRegistered { user, username: String::new(), timestamp: String::new() })
-            } else {
-                match ethers::abi::decode(&[ethers::abi::ParamType::String, ethers::abi::ParamType::Uint(256)], &data.0) {
-                    Ok(tokens) => {
-                        use ethers::abi::Token;
-                        let username = tokens.get(0).and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None }).unwrap_or_default();
-                        let timestamp = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        Some(ParsedEventData::UsernameRegistered { user, username, timestamp })
-                    }
-                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
-                }
+            match decode_str_uint256(data) {
+                None => Some(ParsedEventData::UsernameRegistered { user, username: String::new(), timestamp: String::new() }),
+                Some(Ok((username, timestamp))) => Some(ParsedEventData::UsernameRegistered { user, username, timestamp }),
+                Some(Err(hex)) => Some(ParsedEventData::Raw { hex }),
             }
         }
 
         // ProfileUpdated(address indexed user, string username, uint256 timestamp)
         EventType::ProfileUpdated => {
             let user = indexed_params.first().cloned().unwrap_or_default();
-            if data.is_empty() {
-                Some(ParsedEventData::ProfileUpdatedSimple { user, username: String::new(), timestamp: String::new() })
-            } else {
-                match ethers::abi::decode(&[ethers::abi::ParamType::String, ethers::abi::ParamType::Uint(256)], &data.0) {
-                    Ok(tokens) => {
-                        use ethers::abi::Token;
-                        let username = tokens.get(0).and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None }).unwrap_or_default();
-                        let timestamp = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        Some(ParsedEventData::ProfileUpdatedSimple { user, username, timestamp })
-                    }
-                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
-                }
+            match decode_str_uint256(data) {
+                None => Some(ParsedEventData::ProfileUpdatedSimple { user, username: String::new(), timestamp: String::new() }),
+                Some(Ok((username, timestamp))) => Some(ParsedEventData::ProfileUpdatedSimple { user, username, timestamp }),
+                Some(Err(hex)) => Some(ParsedEventData::Raw { hex }),
             }
         }
 
@@ -1678,9 +1774,8 @@ fn parse_event_data(
             } else {
                 match ethers::abi::decode(&[ethers::abi::ParamType::Bool, ethers::abi::ParamType::Uint(256)], &data.0) {
                     Ok(tokens) => {
-                        use ethers::abi::Token;
-                        let status = tokens.get(0).and_then(|t| match t { Token::Bool(b) => Some(*b), _ => None }).unwrap_or(true);
-                        let timestamp = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let status    = decode_bool(&tokens, 0).unwrap_or(true);
+                        let timestamp = decode_uint(&tokens, 1).unwrap_or_default();
                         Some(ParsedEventData::UserBlockedEvent { user, status, timestamp })
                     }
                     Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
@@ -1700,18 +1795,10 @@ fn parse_event_data(
         EventType::TokensRecovered => {
             let token = indexed_params.first().cloned().unwrap_or_default();
             let to = indexed_params.get(1).cloned().unwrap_or_default();
-            if data.is_empty() {
-                Some(ParsedEventData::TokensRecovered { token, to, amount: String::new(), timestamp: String::new() })
-            } else {
-                match ethers::abi::decode(&[ethers::abi::ParamType::Uint(256), ethers::abi::ParamType::Uint(256)], &data.0) {
-                    Ok(tokens) => {
-                        use ethers::abi::Token;
-                        let amount = tokens.get(0).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        let timestamp = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        Some(ParsedEventData::TokensRecovered { token, to, amount, timestamp })
-                    }
-                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
-                }
+            match decode_two_uint256(data) {
+                None => Some(ParsedEventData::TokensRecovered { token, to, amount: String::new(), timestamp: String::new() }),
+                Some(Ok((amount, timestamp))) => Some(ParsedEventData::TokensRecovered { token, to, amount, timestamp }),
+                Some(Err(hex)) => Some(ParsedEventData::Raw { hex }),
             }
         }
 
@@ -1719,18 +1806,10 @@ fn parse_event_data(
         EventType::TipSent => {
             let sender = indexed_params.first().cloned().unwrap_or_default();
             let recipient = indexed_params.get(1).cloned().unwrap_or_default();
-            if data.is_empty() {
-                Some(ParsedEventData::TipSent { sender, recipient, amount: String::new(), timestamp: String::new() })
-            } else {
-                match ethers::abi::decode(&[ethers::abi::ParamType::Uint(256), ethers::abi::ParamType::Uint(256)], &data.0) {
-                    Ok(tokens) => {
-                        use ethers::abi::Token;
-                        let amount = tokens.get(0).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        let timestamp = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        Some(ParsedEventData::TipSent { sender, recipient, amount, timestamp })
-                    }
-                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
-                }
+            match decode_two_uint256(data) {
+                None => Some(ParsedEventData::TipSent { sender, recipient, amount: String::new(), timestamp: String::new() }),
+                Some(Ok((amount, timestamp))) => Some(ParsedEventData::TipSent { sender, recipient, amount, timestamp }),
+                Some(Err(hex)) => Some(ParsedEventData::Raw { hex }),
             }
         }
 
@@ -1742,9 +1821,8 @@ fn parse_event_data(
             } else {
                 match ethers::abi::decode(&[ethers::abi::ParamType::String, ethers::abi::ParamType::Uint(256)], &data.0) {
                     Ok(tokens) => {
-                        use ethers::abi::Token;
-                        let badge = tokens.get(0).and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None }).unwrap_or_default();
-                        let timestamp = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let badge     = decode_str(&tokens, 0).unwrap_or_default();
+                        let timestamp = decode_uint(&tokens, 1).unwrap_or_default();
                         if matches!(event_type, EventType::BadgeAwarded) {
                             Some(ParsedEventData::BadgeAwardedData { user, badge, timestamp })
                         } else {
@@ -1765,22 +1843,9 @@ fn parse_event_data(
             } else {
                 match ethers::abi::decode(&[ethers::abi::ParamType::Address, ethers::abi::ParamType::Address, ethers::abi::ParamType::Uint(256)], &data.0) {
                     Ok(tokens) => {
-                        use ethers::abi::Token;
-                        let proposer = tokens
-                            .get(0)
-                            .and_then(|t| match t {
-                                Token::Address(a) => Some(format!("0x{}", hex::encode(a.as_bytes()))),
-                                _ => None,
-                            })
-                            .unwrap_or_default();
-                        let recipient = tokens
-                            .get(1)
-                            .and_then(|t| match t {
-                                Token::Address(a) => Some(format!("0x{}", hex::encode(a.as_bytes()))),
-                                _ => None,
-                            })
-                            .unwrap_or_default();
-                        let timestamp = tokens.get(2).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
+                        let proposer  = decode_addr_token(&tokens, 0).unwrap_or_default();
+                        let recipient = decode_addr_token(&tokens, 1).unwrap_or_default();
+                        let timestamp = decode_uint(&tokens, 2).unwrap_or_default();
                         Some(ParsedEventData::CollabProposedData { token_id, proposer, recipient, timestamp })
                     }
                     Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
@@ -1792,18 +1857,10 @@ fn parse_event_data(
         EventType::UsernameTransferred => {
             let from = indexed_params.first().cloned().unwrap_or_default();
             let to = indexed_params.get(1).cloned().unwrap_or_default();
-            if data.is_empty() {
-                Some(ParsedEventData::UsernameTransferredData { from, to, username: String::new(), timestamp: String::new() })
-            } else {
-                match ethers::abi::decode(&[ethers::abi::ParamType::String, ethers::abi::ParamType::Uint(256)], &data.0) {
-                    Ok(tokens) => {
-                        use ethers::abi::Token;
-                        let username = tokens.get(0).and_then(|t| match t { Token::String(s) => Some(s.clone()), _ => None }).unwrap_or_default();
-                        let timestamp = tokens.get(1).and_then(|t| match t { Token::Uint(u) => Some(u.to_string()), _ => None }).unwrap_or_default();
-                        Some(ParsedEventData::UsernameTransferredData { from, to, username, timestamp })
-                    }
-                    Err(_) => Some(ParsedEventData::Raw { hex: format!("0x{}", hex::encode(data)) }),
-                }
+            match decode_str_uint256(data) {
+                None => Some(ParsedEventData::UsernameTransferredData { from, to, username: String::new(), timestamp: String::new() }),
+                Some(Ok((username, timestamp))) => Some(ParsedEventData::UsernameTransferredData { from, to, username, timestamp }),
+                Some(Err(hex)) => Some(ParsedEventData::Raw { hex }),
             }
         }
 
@@ -1838,7 +1895,7 @@ mod tests {
             h256_from_hex("0xe913bf0f321ec4538e6e03894963538ad29d5bc7610699f655b8d4be77ef3c31");
         assert_eq!(EVENT_SIGNATURES.get(&sig2), Some(&EventType::ContentMinted));
 
-        // TheraFriends social event signatures
+        // TheraFriendz social event signatures
         let user_follow_sig = keccak256_signature("UserFollowed(address,address,uint256)");
         assert_eq!(EVENT_SIGNATURES.get(&user_follow_sig), Some(&EventType::UserFollowed));
         let user_unfollow_sig = keccak256_signature("UserUnfollowed(address,address,uint256)");
@@ -2416,6 +2473,7 @@ mod tests {
         use ethers::types::Bytes;
 
         let sig_collab = keccak256_signature("CollabProposed(uint256,address,address,uint256)");
+        // 0x42 hex = 66 decimal
         let token_topic = h256_from_hex("0x0000000000000000000000000000000000000000000000000000000000000042");
         let proposer = ethers::abi::Token::Address(ethers::types::H160::from_low_u64_be(0xabc));
         let recipient = ethers::abi::Token::Address(ethers::types::H160::from_low_u64_be(0xdef));
@@ -2428,7 +2486,7 @@ mod tests {
         let parsed = parse_log(&log, "friends").expect("parse failed");
         assert_eq!(parsed.event_type, "CollabProposed");
         if let Some(ParsedEventData::CollabProposedData { token_id, proposer, recipient, timestamp }) = parsed.data {
-            assert_eq!(token_id, "42");
+            assert_eq!(token_id, "66"); // 0x42 hex = 66 decimal
             assert!(proposer.starts_with("0x"));
             assert!(recipient.starts_with("0x"));
             assert_eq!(timestamp, "1700000500");
@@ -2451,6 +2509,500 @@ mod tests {
             assert_eq!(username, "robert");
             assert_eq!(timestamp, "1700000500");
         } else { panic!("Expected UsernameTransferred data"); }
+    }
+
+    // ── Pure helper unit tests ──────────────────────────────────────────────
+    //
+    // These tests exercise the three private decode helpers directly.
+    // They are reachable here because #[cfg(test)] sub-modules can access
+    // private items in their parent module.
+
+    // --- read_amount_timestamp -----------------------------------------------
+
+    #[test]
+    fn read_amount_timestamp_happy_path() {
+        // 64 bytes of raw big-endian data: amount=10, timestamp=20
+        let mut data_vec = vec![0u8; 64];
+        ethers::types::U256::from(10u64).to_big_endian(&mut data_vec[0..32]);
+        ethers::types::U256::from(20u64).to_big_endian(&mut data_vec[32..64]);
+        let data = ethers::types::Bytes::from(data_vec);
+        let (amount, timestamp) = read_amount_timestamp(&data);
+        assert_eq!(amount, "10");
+        assert_eq!(timestamp, "20");
+    }
+
+    #[test]
+    fn read_amount_timestamp_zero_amount() {
+        // Zero amount must return "0", not an error or empty string
+        let mut data_vec = vec![0u8; 64];
+        ethers::types::U256::from(0u64).to_big_endian(&mut data_vec[0..32]);
+        ethers::types::U256::from(999u64).to_big_endian(&mut data_vec[32..64]);
+        let data = ethers::types::Bytes::from(data_vec);
+        let (amount, timestamp) = read_amount_timestamp(&data);
+        assert_eq!(amount, "0");
+        assert_eq!(timestamp, "999");
+    }
+
+    #[test]
+    fn read_amount_timestamp_only_32_bytes() {
+        // Only first word present: amount set, timestamp empty
+        let mut data_vec = vec![0u8; 32];
+        ethers::types::U256::from(42u64).to_big_endian(&mut data_vec[0..32]);
+        let data = ethers::types::Bytes::from(data_vec);
+        let (amount, timestamp) = read_amount_timestamp(&data);
+        assert_eq!(amount, "42");
+        assert_eq!(timestamp, "");
+    }
+
+    #[test]
+    fn read_amount_timestamp_empty_data() {
+        // No bytes at all: both fields empty
+        let data = ethers::types::Bytes::from(vec![]);
+        let (amount, timestamp) = read_amount_timestamp(&data);
+        assert_eq!(amount, "");
+        assert_eq!(timestamp, "");
+    }
+
+    // --- decode_two_uint256 --------------------------------------------------
+
+    #[test]
+    fn decode_two_uint256_happy_path() {
+        // ABI-encode [Uint(10), Uint(20)] and verify round-trip
+        let encoded = ethers::abi::encode(&[
+            ethers::abi::Token::Uint(ethers::types::U256::from(10u64)),
+            ethers::abi::Token::Uint(ethers::types::U256::from(20u64)),
+        ]);
+        let data = ethers::types::Bytes::from(encoded);
+        let result = decode_two_uint256(&data);
+        let (a, b) = result.expect("should be Some").expect("should be Ok");
+        assert_eq!(a, "10");
+        assert_eq!(b, "20");
+    }
+
+    #[test]
+    fn decode_two_uint256_large_values() {
+        // Test with a realistic amount (1e18 wei) and a Unix timestamp
+        let amount = ethers::types::U256::from(1_000_000_000_000_000_000u128); // 1 ether in wei
+        let ts = ethers::types::U256::from(1_700_000_500u64);
+        let encoded = ethers::abi::encode(&[
+            ethers::abi::Token::Uint(amount),
+            ethers::abi::Token::Uint(ts),
+        ]);
+        let data = ethers::types::Bytes::from(encoded);
+        let (a, b) = decode_two_uint256(&data).unwrap().unwrap();
+        assert_eq!(a, "1000000000000000000");
+        assert_eq!(b, "1700000500");
+    }
+
+    #[test]
+    fn decode_two_uint256_empty_data_returns_none() {
+        let data = ethers::types::Bytes::from(vec![]);
+        assert!(decode_two_uint256(&data).is_none());
+    }
+
+    #[test]
+    fn decode_two_uint256_too_short_returns_err() {
+        // 31 bytes — not enough for even one uint256 word; ABI decoder should fail
+        let data = ethers::types::Bytes::from(vec![0u8; 31]);
+        let result = decode_two_uint256(&data);
+        // Should be Some(Err(_)) — not None and not Ok
+        match result {
+            Some(Err(hex_str)) => {
+                // Error value is the 0x-prefixed hex of the input
+                assert!(hex_str.starts_with("0x"));
+            }
+            other => panic!("expected Some(Err(hex)), got {:?}", other),
+        }
+    }
+
+    // --- decode_str_uint256 --------------------------------------------------
+
+    #[test]
+    fn decode_str_uint256_happy_path() {
+        let encoded = ethers::abi::encode(&[
+            ethers::abi::Token::String("alice".to_string()),
+            ethers::abi::Token::Uint(ethers::types::U256::from(1_700_000_500u64)),
+        ]);
+        let data = ethers::types::Bytes::from(encoded);
+        let result = decode_str_uint256(&data);
+        let (s, u) = result.expect("should be Some").expect("should be Ok");
+        assert_eq!(s, "alice");
+        assert_eq!(u, "1700000500");
+    }
+
+    #[test]
+    fn decode_str_uint256_empty_string_portion() {
+        // Empty string is valid ABI; should decode to ("", uint_value)
+        let encoded = ethers::abi::encode(&[
+            ethers::abi::Token::String(String::new()),
+            ethers::abi::Token::Uint(ethers::types::U256::from(42u64)),
+        ]);
+        let data = ethers::types::Bytes::from(encoded);
+        let (s, u) = decode_str_uint256(&data).unwrap().unwrap();
+        assert_eq!(s, "");
+        assert_eq!(u, "42");
+    }
+
+    #[test]
+    fn decode_str_uint256_empty_data_returns_none() {
+        let data = ethers::types::Bytes::from(vec![]);
+        assert!(decode_str_uint256(&data).is_none());
+    }
+
+    #[test]
+    fn decode_str_uint256_invalid_bytes_returns_err() {
+        // 32 bytes of 0xff — not a valid ABI-encoded (string, uint256)
+        // The string offset would point past the end of the buffer
+        let data = ethers::types::Bytes::from(vec![0xffu8; 32]);
+        let result = decode_str_uint256(&data);
+        match result {
+            Some(Err(hex_str)) => {
+                assert!(hex_str.starts_with("0x"));
+            }
+            other => panic!("expected Some(Err(hex)), got {:?}", other),
+        }
+    }
+
+    // ── Priority routing tests ──────────────────────────────────────────────
+    //
+    // is_notification_event() drives the 3-tier Kafka topic split introduced
+    // in Round 3. A regression here silently routes all notification events
+    // to the analytics topic, starving the priority consumer and adding up
+    // to 1s latency to UserFollowed / ContentLiked delivery.
+
+    #[test]
+    fn test_is_notification_event_positive() {
+        // All events that should go to notifications.priority
+        assert!(EventType::ContentLiked.is_notification_event(), "ContentLiked");
+        assert!(EventType::ContentCommented.is_notification_event(), "ContentCommented");
+        assert!(EventType::ContentCopyMinted.is_notification_event(), "ContentCopyMinted");
+        assert!(EventType::UserFollowed.is_notification_event(), "UserFollowed");
+        assert!(EventType::Followed.is_notification_event(), "Followed (legacy)");
+        assert!(EventType::SnapLiked.is_notification_event(), "SnapLiked");
+        assert!(EventType::ArtLiked.is_notification_event(), "ArtLiked");
+        assert!(EventType::MusicLiked.is_notification_event(), "MusicLiked");
+        assert!(EventType::FlixLiked.is_notification_event(), "FlixLiked");
+    }
+
+    #[test]
+    fn test_is_notification_event_negative() {
+        // Analytics/admin events should NOT go to notifications.priority
+        assert!(!EventType::ContentMinted.is_notification_event(), "ContentMinted is analytics");
+        assert!(!EventType::ContentUnliked.is_notification_event(), "ContentUnliked is analytics");
+        assert!(!EventType::UserUnfollowed.is_notification_event(), "UserUnfollowed is analytics");
+        assert!(!EventType::ProfileUpdated.is_notification_event(), "ProfileUpdated is analytics");
+        assert!(!EventType::RoyaltyDistributed.is_notification_event(), "RoyaltyDistributed is analytics");
+        assert!(!EventType::EarningsWithdrawn.is_notification_event(), "EarningsWithdrawn is analytics");
+    }
+
+    #[test]
+    fn test_kafka_topic_priority_routing() {
+        // Verify the 3-tier routing: notification → priority topic
+        assert_eq!(EventType::ContentLiked.kafka_topic(), "notifications.priority");
+        assert_eq!(EventType::UserFollowed.kafka_topic(), "notifications.priority");
+        // Social (non-notification) → user.actions
+        assert_eq!(EventType::ProfileUpdated.kafka_topic(), "user.actions");
+        // Analytics → blockchain.events
+        assert_eq!(EventType::ContentMinted.kafka_topic(), "blockchain.events");
+    }
+
+    // ── event_kafka_key ─────────────────────────────────────────────────────
+
+    #[test]
+    fn event_kafka_key_format() {
+        // event_kafka_key returns "<contract_type>.<contract_address>"
+        use ethers::types::Log;
+        let mut event = super::ParsedEvent {
+            event_type: "SnapMinted".to_string(),
+            contract_address: "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string(),
+            contract_type: "snap".to_string(),
+            block_number: 1,
+            transaction_hash: "0xabc".to_string(),
+            log_index: 0,
+            timestamp: 0,
+            indexed_params: vec![],
+            data: None,
+            raw_data: None,
+            kafka_topic: "blockchain.events",
+        };
+
+        let key = super::event_kafka_key(&event);
+        assert_eq!(key, "snap.0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+    }
+
+    #[test]
+    fn event_kafka_key_friends_contract() {
+        let event = super::ParsedEvent {
+            event_type: "UserFollowed".to_string(),
+            contract_address: "0x1111111111111111111111111111111111111111".to_string(),
+            contract_type: "friends".to_string(),
+            block_number: 100,
+            transaction_hash: "0xfeed".to_string(),
+            log_index: 2,
+            timestamp: 1_700_000_000,
+            indexed_params: vec![],
+            data: None,
+            raw_data: None,
+            kafka_topic: "notifications.priority",
+        };
+
+        let key = super::event_kafka_key(&event);
+        assert_eq!(key, "friends.0x1111111111111111111111111111111111111111");
+    }
+
+    #[test]
+    fn event_kafka_key_common_contract() {
+        let event = super::ParsedEvent {
+            event_type: "Transfer".to_string(),
+            contract_address: "0x0000000000000000000000000000000000000000".to_string(),
+            contract_type: "common".to_string(),
+            block_number: 0,
+            transaction_hash: String::new(),
+            log_index: 0,
+            timestamp: 0,
+            indexed_params: vec![],
+            data: None,
+            raw_data: None,
+            kafka_topic: "blockchain.events",
+        };
+
+        // Zero-address edge case: key must still be well-formed
+        let key = super::event_kafka_key(&event);
+        assert_eq!(key, "common.0x0000000000000000000000000000000000000000");
+    }
+
+    // ── EventType::is_purchase ───────────────────────────────────────────────
+
+    #[test]
+    fn is_purchase_positive() {
+        assert!(EventType::SnapBoughtAndMinted.is_purchase(), "SnapBoughtAndMinted");
+        assert!(EventType::ArtBoughtAndMinted.is_purchase(), "ArtBoughtAndMinted");
+        assert!(EventType::MusicBoughtAndMinted.is_purchase(), "MusicBoughtAndMinted");
+        assert!(EventType::FlixBoughtAndMinted.is_purchase(), "FlixBoughtAndMinted");
+        assert!(EventType::PurchaseProcessed.is_purchase(), "PurchaseProcessed");
+        assert!(EventType::ContentCopyMinted.is_purchase(), "ContentCopyMinted");
+    }
+
+    #[test]
+    fn is_purchase_negative() {
+        // Minting original content is NOT a purchase
+        assert!(!EventType::ContentMinted.is_purchase(), "ContentMinted");
+        assert!(!EventType::SnapMinted.is_purchase(), "SnapMinted");
+        // Social actions are NOT purchases
+        assert!(!EventType::UserFollowed.is_purchase(), "UserFollowed");
+        assert!(!EventType::ContentLiked.is_purchase(), "ContentLiked");
+        // Admin/common events are NOT purchases
+        assert!(!EventType::RoyaltyDistributed.is_purchase(), "RoyaltyDistributed");
+        assert!(!EventType::Transfer.is_purchase(), "Transfer");
+        assert!(!EventType::Unknown.is_purchase(), "Unknown");
+    }
+
+    // ── EventType::contract_type — full coverage ────────────────────────────
+
+    #[test]
+    fn contract_type_all_media_types() {
+        // art
+        assert_eq!(EventType::ArtMinted.contract_type(), "art");
+        assert_eq!(EventType::ArtLiked.contract_type(), "art");
+        assert_eq!(EventType::ArtCommented.contract_type(), "art");
+        assert_eq!(EventType::ArtBoughtAndMinted.contract_type(), "art");
+        assert_eq!(EventType::ArtDeleted.contract_type(), "art");
+
+        // music
+        assert_eq!(EventType::MusicMinted.contract_type(), "music");
+        assert_eq!(EventType::MusicLiked.contract_type(), "music");
+        assert_eq!(EventType::MusicCommented.contract_type(), "music");
+        assert_eq!(EventType::MusicBoughtAndMinted.contract_type(), "music");
+        assert_eq!(EventType::MusicDeleted.contract_type(), "music");
+
+        // flix
+        assert_eq!(EventType::FlixMinted.contract_type(), "flix");
+        assert_eq!(EventType::FlixLiked.contract_type(), "flix");
+        assert_eq!(EventType::FlixCommented.contract_type(), "flix");
+        assert_eq!(EventType::FlixBoughtAndMinted.contract_type(), "flix");
+        assert_eq!(EventType::FlixDeleted.contract_type(), "flix");
+    }
+
+    #[test]
+    fn contract_type_common_and_unknown() {
+        assert_eq!(EventType::Transfer.contract_type(), "common");
+        assert_eq!(EventType::PurchaseProcessed.contract_type(), "common");
+        assert_eq!(EventType::RoyaltyDistributed.contract_type(), "common");
+        assert_eq!(EventType::BurnedContentRevenue.contract_type(), "common");
+        assert_eq!(EventType::CollabProposed.contract_type(), "common");
+        assert_eq!(EventType::Unknown.contract_type(), "common");
+    }
+
+    #[test]
+    fn contract_type_unified_friendz_events() {
+        // All unified TheraFriendz content & social events are "friends"
+        assert_eq!(EventType::ContentMinted.contract_type(), "friends");
+        assert_eq!(EventType::ContentCopyMinted.contract_type(), "friends");
+        assert_eq!(EventType::ContentLiked.contract_type(), "friends");
+        assert_eq!(EventType::ContentUnliked.contract_type(), "friends");
+        assert_eq!(EventType::ContentCommented.contract_type(), "friends");
+        assert_eq!(EventType::ContentBlocked.contract_type(), "friends");
+        assert_eq!(EventType::ContentBookmarked.contract_type(), "friends");
+        assert_eq!(EventType::ContentBurned.contract_type(), "friends");
+        assert_eq!(EventType::UserFollowed.contract_type(), "friends");
+        assert_eq!(EventType::UserUnfollowed.contract_type(), "friends");
+        assert_eq!(EventType::BadgeAwarded.contract_type(), "friends");
+        assert_eq!(EventType::BadgeRemoved.contract_type(), "friends");
+        assert_eq!(EventType::TipSent.contract_type(), "friends");
+        assert_eq!(EventType::PricesUpdated.contract_type(), "friends");
+    }
+
+    // ── EventType::is_mint — full coverage ──────────────────────────────────
+
+    #[test]
+    fn is_mint_positive_all_variants() {
+        assert!(EventType::SnapMinted.is_mint());
+        assert!(EventType::ArtMinted.is_mint());
+        assert!(EventType::MusicMinted.is_mint());
+        assert!(EventType::FlixMinted.is_mint());
+        assert!(EventType::ContentMinted.is_mint());
+    }
+
+    #[test]
+    fn is_mint_negative() {
+        // Copy mint (purchase) is NOT is_mint
+        assert!(!EventType::ContentCopyMinted.is_mint());
+        assert!(!EventType::SnapBoughtAndMinted.is_mint());
+        assert!(!EventType::Unknown.is_mint());
+        assert!(!EventType::Transfer.is_mint());
+    }
+
+    // ── EventType::is_like — full coverage ──────────────────────────────────
+
+    #[test]
+    fn is_like_positive_all_variants() {
+        assert!(EventType::SnapLiked.is_like());
+        assert!(EventType::ArtLiked.is_like());
+        assert!(EventType::MusicLiked.is_like());
+        assert!(EventType::FlixLiked.is_like());
+        assert!(EventType::ContentLiked.is_like());
+        // ContentUnliked is included in is_like
+        assert!(EventType::ContentUnliked.is_like());
+    }
+
+    #[test]
+    fn is_like_negative() {
+        assert!(!EventType::ContentMinted.is_like());
+        assert!(!EventType::UserFollowed.is_like());
+        assert!(!EventType::Unknown.is_like());
+    }
+
+    // ── EventType::is_social — full coverage ────────────────────────────────
+
+    #[test]
+    fn is_social_positive_all_variants() {
+        assert!(EventType::Followed.is_social());
+        assert!(EventType::Unfollowed.is_social());
+        assert!(EventType::UsernameRegistered.is_social());
+        assert!(EventType::UsernameTransferred.is_social());
+        assert!(EventType::ProfileUpdated.is_social());
+        assert!(EventType::NotificationEvent.is_social());
+        assert!(EventType::EarningsWithdrawn.is_social());
+        assert!(EventType::UserVerified.is_social());
+        assert!(EventType::UserUnverified.is_social());
+        assert!(EventType::UserBlocked.is_social());
+        assert!(EventType::UserUnblocked.is_social());
+        assert!(EventType::UserFollowed.is_social());
+        assert!(EventType::UserUnfollowed.is_social());
+        assert!(EventType::BadgeAwarded.is_social());
+        assert!(EventType::BadgeRemoved.is_social());
+        assert!(EventType::TipSent.is_social());
+        assert!(EventType::PricesUpdated.is_social());
+        assert!(EventType::ContentBookmarked.is_social());
+        assert!(EventType::ContentShared.is_social());
+    }
+
+    #[test]
+    fn is_social_negative() {
+        // Content creation and purchases are NOT social
+        assert!(!EventType::ContentMinted.is_social());
+        assert!(!EventType::ContentLiked.is_social());
+        assert!(!EventType::SnapBoughtAndMinted.is_social());
+        assert!(!EventType::Transfer.is_social());
+        assert!(!EventType::Unknown.is_social());
+    }
+
+    // ── parse_log: empty-topics fallback and unknown-event raw data ──────────
+
+    #[test]
+    fn parse_log_empty_topics_returns_unknown() {
+        // A log with no topics should produce EventType::Unknown
+        let log = ethers::types::Log::default();
+        let parsed = parse_log(&log, "snap").expect("parse failed");
+        assert_eq!(parsed.event_type, "Unknown");
+        assert_eq!(parsed.contract_type, "snap"); // uses fallback_contract_type
+        assert!(parsed.indexed_params.is_empty());
+    }
+
+    #[test]
+    fn parse_log_unrecognised_topic_uses_fallback_contract_type() {
+        // A log whose topic0 is not in EVENT_SIGNATURES → Unknown event,
+        // contract_type falls back to the caller-supplied value.
+        let mystery_sig = h256_from_hex(
+            "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        );
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![mystery_sig];
+        let parsed = parse_log(&log, "art").expect("parse failed");
+        assert_eq!(parsed.event_type, "Unknown");
+        assert_eq!(parsed.contract_type, "art");
+    }
+
+    #[test]
+    fn parse_log_unknown_event_with_data_produces_raw() {
+        // Unknown event with non-empty data → raw_data is Some(hex)
+        let mystery_sig = h256_from_hex(
+            "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        );
+        let mut log = ethers::types::Log::default();
+        log.topics = vec![mystery_sig];
+        log.data = ethers::types::Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]);
+        let parsed = parse_log(&log, "common").expect("parse failed");
+        // raw_data should contain the hex-encoded payload
+        let raw = parsed.raw_data.expect("expected raw_data");
+        assert!(raw.starts_with("0x"));
+        assert!(raw.contains("deadbeef"));
+    }
+
+    // ── ContentMinted contentType → contract_type mapping ───────────────────
+
+    #[test]
+    fn parse_content_minted_content_type_mapping() {
+        // contentType encoding: 0→art, 1→flix, 2→music, 3→snap
+        let sig = h256_from_hex(
+            "0xe913bf0f321ec4538e6e03894963538ad29d5bc7610699f655b8d4be77ef3c31",
+        );
+        let token_topic =
+            h256_from_hex("0x0000000000000000000000000000000000000000000000000000000000000001");
+        let creator_topic =
+            h256_from_hex("0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+        let cases: &[(u64, &str)] = &[(0, "art"), (1, "flix"), (2, "music"), (3, "snap")];
+
+        for (ct_value, expected_type) in cases {
+            // Encode contentType as a 32-byte big-endian word in topic3
+            let mut ct_bytes = [0u8; 32];
+            ct_bytes[31] = *ct_value as u8;
+            let ct_topic = ethers::types::H256::from(ct_bytes);
+
+            // data: price=0, timestamp=0 (64 zero bytes)
+            let data = ethers::types::Bytes::from(vec![0u8; 64]);
+
+            let mut log = ethers::types::Log::default();
+            log.topics = vec![sig, token_topic, creator_topic, ct_topic];
+            log.data = data;
+
+            let parsed = parse_log(&log, "friends").expect("parse failed");
+            assert_eq!(
+                parsed.contract_type, *expected_type,
+                "contentType={ct_value} should map to contract_type={expected_type}"
+            );
+        }
     }
 }
 

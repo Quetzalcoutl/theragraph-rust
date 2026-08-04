@@ -12,6 +12,7 @@ use axum::Json;
 use serde::Serialize;
 use std::borrow::Cow;
 use thiserror::Error;
+use tracing::{error, warn};
 
 /// Result type alias for TheraGraph operations
 pub type Result<T> = std::result::Result<T, Error>;
@@ -159,6 +160,12 @@ pub enum Error {
     InvalidFormat { message: Cow<'static, str> },
 
     // ========================================================================
+    // Bundler Errors
+    // ========================================================================
+    #[error("Bundler error: {0}")]
+    Bundler(#[from] BundlerError),
+
+    // ========================================================================
     // Generic Errors
     // ========================================================================
     #[error("Operation timed out after {timeout_ms}ms")]
@@ -169,6 +176,21 @@ pub enum Error {
 
     #[error("{0}")]
     Other(#[from] anyhow::Error),
+}
+
+/// Structured bundler errors — gives HTTP routes a seam for proper status mapping.
+#[derive(Debug, thiserror::Error)]
+pub enum BundlerError {
+    #[error("Bundler configuration error: {0}")]
+    Config(String),
+    #[error("Bundler RPC error: {0}")]
+    Rpc(String),
+    #[error("UserOp simulation failed: {0}")]
+    Simulation(String),
+    #[error("Batch submission failed: {0}")]
+    Submission(String),
+    #[error("Bundler subsystem not initialized")]
+    NotInitialized,
 }
 
 impl Error {
@@ -288,6 +310,13 @@ impl Error {
                 StatusCode::SERVICE_UNAVAILABLE
             }
             Error::Timeout { .. } | Error::QueryTimeout { .. } => StatusCode::GATEWAY_TIMEOUT,
+            Error::Bundler(e) => match e {
+                BundlerError::Config(_) | BundlerError::Simulation(_) => StatusCode::BAD_REQUEST,
+                BundlerError::Rpc(_) | BundlerError::NotInitialized => {
+                    StatusCode::SERVICE_UNAVAILABLE
+                }
+                BundlerError::Submission(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            },
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -323,6 +352,7 @@ impl Error {
             Error::Json(_) | Error::InvalidFormat { .. } => "SERIALIZATION_ERROR",
             Error::Timeout { .. } => "TIMEOUT",
             Error::ServiceUnavailable { .. } => "SERVICE_UNAVAILABLE",
+            Error::Bundler(_) => "BUNDLER_ERROR",
             Error::Internal { .. } | Error::Other(_) => "INTERNAL_ERROR",
         }
     }
@@ -353,6 +383,27 @@ impl IntoResponse for Error {
         let status = self.status_code();
         let code = self.error_code();
         let message = self.to_string();
+        let is_err_level = self.is_error_level();
+
+        // LOG-S23-01: log the real error before sanitizing for clients — operators
+        // need the full message even though users only see the generic safe_message.
+        // 5xx errors at error! level for paging signals; service-unavailable / timeout
+        // at warn! level since they are transient by design.
+        if status.is_server_error() {
+            if is_err_level {
+                error!(
+                    error.code = code,
+                    http.status_code = status.as_u16(),
+                    "{message}"
+                );
+            } else {
+                warn!(
+                    error.code = code,
+                    http.status_code = status.as_u16(),
+                    "{message}"
+                );
+            }
+        }
 
         // Don't expose internal error details in production
         let safe_message = if status == StatusCode::INTERNAL_SERVER_ERROR {
@@ -422,9 +473,11 @@ impl From<rdkafka::error::KafkaError> for Error {
 }
 
 impl From<std::env::VarError> for Error {
-    fn from(_err: std::env::VarError) -> Self {
+    fn from(err: std::env::VarError) -> Self {
+        // ENV-S23-01: preserve the VarError detail (NotPresent / NotUnicode) so
+        // operators can tell which variable was missing without reading code.
         Error::Config {
-            message: "Environment variable error".into(),
+            message: format!("Environment variable error: {err}").into(),
             source: None,
         }
     }
@@ -432,34 +485,10 @@ impl From<std::env::VarError> for Error {
 
 // Note: ProviderError conversion is already implemented above
 
-// ============================================================================
-// Extension trait for adding context to errors
-// ============================================================================
-
-/// Extension trait for adding context to Results
-#[allow(dead_code)]
-pub trait ResultExt<T> {
-    /// Add context to an error
-    fn context(self, message: impl Into<Cow<'static, str>>) -> Result<T>;
-
-    /// Add context lazily (only evaluated on error)
-    fn with_context<F>(self, f: F) -> Result<T>
-    where
-        F: FnOnce() -> Cow<'static, str>;
-}
-
-impl<T, E: Into<Error>> ResultExt<T> for std::result::Result<T, E> {
-    fn context(self, _message: impl Into<Cow<'static, str>>) -> Result<T> {
-        self.map_err(Into::into)
-    }
-
-    fn with_context<F>(self, _f: F) -> Result<T>
-    where
-        F: FnOnce() -> Cow<'static, str>,
-    {
-        self.map_err(Into::into)
-    }
-}
+// Note: call sites that need context-enriched errors use `anyhow::Context` directly
+// (e.g. graph_client.rs). The custom ResultExt trait was removed (S23-REX-01) because
+// its implementation silently discarded every context string it was given — a broken
+// API is worse than no API.
 
 #[cfg(test)]
 mod tests {
@@ -499,6 +528,110 @@ mod tests {
         assert_eq!(
             Error::Internal { source: None }.status_code(),
             StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    // ---- Constructor tests --------------------------------------------------
+
+    #[test]
+    fn config_error_has_correct_code() {
+        let err = Error::config("bad");
+        assert_eq!(err.error_code(), "CONFIG_ERROR");
+    }
+
+    #[test]
+    fn not_found_error_includes_entity_and_id() {
+        let err = Error::not_found("user", "0x123");
+        assert_eq!(err.status_code(), StatusCode::NOT_FOUND);
+        let msg = err.to_string();
+        assert!(msg.contains("user"), "message should contain entity type");
+        assert!(msg.contains("0x123"), "message should contain id");
+    }
+
+    #[test]
+    fn bad_request_error_status_400() {
+        let err = Error::bad_request("invalid");
+        assert_eq!(err.status_code(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn database_error_status_500() {
+        let err = Error::database("conn failed");
+        assert_eq!(err.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ---- Retryability tests -------------------------------------------------
+
+    #[test]
+    fn database_error_is_retryable() {
+        assert!(Error::database("conn failed").is_retryable());
+    }
+
+    #[test]
+    fn kafka_error_is_retryable() {
+        assert!(Error::kafka("broker unreachable").is_retryable());
+    }
+
+    #[test]
+    fn config_error_not_retryable() {
+        assert!(!Error::config("missing key").is_retryable());
+    }
+
+    #[test]
+    fn bad_request_not_retryable() {
+        assert!(!Error::bad_request("invalid input").is_retryable());
+    }
+
+    #[test]
+    fn not_found_not_retryable() {
+        assert!(!Error::not_found("user", "0xabc").is_retryable());
+    }
+
+    // ---- Log-level tests ----------------------------------------------------
+
+    #[test]
+    fn config_and_db_are_error_level() {
+        // Config is NOT in is_error_level — only Database, Blockchain, Kafka,
+        // Internal, and Migration are. Verify the real contract rather than
+        // assume config is error-level.
+        assert!(Error::database("oops").is_error_level());
+        assert!(Error::kafka("oops").is_error_level());
+        assert!(Error::blockchain("oops").is_error_level());
+        assert!(Error::Internal { source: None }.is_error_level());
+        // Config is intentionally NOT error-level per the match arms above.
+        assert!(!Error::config("bad key").is_error_level());
+    }
+
+    #[test]
+    fn bad_request_is_warn_level() {
+        // Client errors (4xx) are not logged at error level.
+        assert!(!Error::bad_request("invalid").is_error_level());
+    }
+
+    // ---- Status-code survey -------------------------------------------------
+
+    #[test]
+    fn status_code_mapping_survey() {
+        // Spot-check four distinct variants to guard against accidental
+        // catch-all regressions in the match arms.
+        assert_eq!(
+            Error::config("x").status_code(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+        assert_eq!(
+            Error::bad_request("x").status_code(),
+            StatusCode::BAD_REQUEST,
+        );
+        assert_eq!(
+            Error::not_found("post", "42").status_code(),
+            StatusCode::NOT_FOUND,
+        );
+        assert_eq!(
+            Error::Unauthorized {
+                message: "token expired".into()
+            }
+            .status_code(),
+            StatusCode::UNAUTHORIZED,
         );
     }
 }

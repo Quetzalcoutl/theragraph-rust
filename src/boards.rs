@@ -19,6 +19,8 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tracing::{error, info};
 
+use crate::recommendation::cache::RecCache;
+
 /// Cache entry with TTL
 struct CacheEntry<T> {
     data: T,
@@ -35,14 +37,21 @@ impl<T: Clone> CacheEntry<T> {
 /// Board cache state
 pub struct BoardCacheState {
     pub pool: PgPool,
+    rec_cache: Option<RecCache>,
     topics_cache: RwLock<Option<CacheEntry<Vec<BoardTopicCached>>>>,
     posts_cache: RwLock<HashMap<String, CacheEntry<Vec<BoardPostCached>>>>,
 }
 
 impl BoardCacheState {
+    #[allow(dead_code)]
     pub fn new(pool: PgPool) -> Self {
+        Self::with_cache(pool, None)
+    }
+
+    pub fn with_cache(pool: PgPool, rec_cache: Option<RecCache>) -> Self {
         Self {
             pool,
+            rec_cache,
             topics_cache: RwLock::new(None),
             posts_cache: RwLock::new(HashMap::new()),
         }
@@ -116,7 +125,14 @@ pub fn board_routes() -> Router<Arc<BoardCacheState>> {
 async fn get_topics(
     State(state): State<Arc<BoardCacheState>>,
 ) -> Result<Json<Vec<BoardTopicCached>>, StatusCode> {
-    // Check cache first
+    // 1. Redis (warm path when available)
+    if let Some(ref rc) = state.rec_cache {
+        if let Some(topics) = rc.get_board::<Vec<BoardTopicCached>>("topics").await {
+            return Ok(Json(topics));
+        }
+    }
+
+    // 2. In-memory fallback
     {
         let cache = state.topics_cache.read().await;
         if let Some(entry) = cache.as_ref() {
@@ -126,7 +142,7 @@ async fn get_topics(
         }
     }
 
-    // Fetch from DB
+    // 3. DB
     let topics: Vec<BoardTopicCached> = sqlx::query_as(
         r#"
         SELECT id::text, slug, name, description, icon, post_count, last_post_at
@@ -142,7 +158,10 @@ async fn get_topics(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // Update cache (10 minutes TTL)
+    // Write to Redis (10 min TTL) and in-memory
+    if let Some(ref rc) = state.rec_cache {
+        rc.set_board("topics", &topics, 600).await;
+    }
     {
         let mut cache = state.topics_cache.write().await;
         *cache = Some(CacheEntry {
@@ -161,9 +180,18 @@ async fn get_topic_posts(
     Path(slug): Path<String>,
     Query(params): Query<BoardPostsQuery>,
 ) -> Result<Json<Vec<BoardPostCached>>, StatusCode> {
-    let cache_key = format!("{}:{}:{}", slug, params.limit, params.offset);
+    let limit = params.limit.clamp(1, 100);
+    let offset = params.offset.max(0).min(100_000);
+    let cache_key = format!("posts:{}:{}:{}", slug, limit, offset);
 
-    // Check cache (30 second TTL for posts — they update more frequently)
+    // 1. Redis
+    if let Some(ref rc) = state.rec_cache {
+        if let Some(posts) = rc.get_board::<Vec<BoardPostCached>>(&cache_key).await {
+            return Ok(Json(posts));
+        }
+    }
+
+    // 2. In-memory fallback
     {
         let cache = state.posts_cache.read().await;
         if let Some(entry) = cache.get(&cache_key) {
@@ -186,8 +214,8 @@ async fn get_topic_posts(
         "#,
     )
     .bind(&slug)
-    .bind(params.limit)
-    .bind(params.offset)
+    .bind(limit)
+    .bind(offset)
     .fetch_all(&state.pool)
     .await
     .map_err(|e| {
@@ -206,9 +234,17 @@ async fn get_topic_posts(
         })
         .collect();
 
-    // Cache for 30 seconds
+    // Write to Redis (30s TTL) and in-memory; prune expired entries on write
+    if let Some(ref rc) = state.rec_cache {
+        rc.set_board(&cache_key, &posts, 30).await;
+    }
     {
+        const MAX_POSTS_CACHE: usize = 500;
         let mut cache = state.posts_cache.write().await;
+        cache.retain(|_, v| !v.is_expired());
+        if cache.len() >= MAX_POSTS_CACHE {
+            cache.clear();
+        }
         cache.insert(
             cache_key,
             CacheEntry {
@@ -259,6 +295,9 @@ async fn get_post_replies(
     Path(id): Path<String>,
     Query(params): Query<BoardPostsQuery>,
 ) -> Result<Json<Vec<BoardReplyCached>>, StatusCode> {
+    let limit = params.limit.clamp(1, 100);
+    let offset = params.offset.max(0).min(100_000);
+
     let replies: Vec<BoardReplyCached> = sqlx::query_as(
         r#"
         SELECT id::text, post_id::text, parent_reply_id::text,
@@ -271,8 +310,8 @@ async fn get_post_replies(
         "#,
     )
     .bind(&id)
-    .bind(params.limit)
-    .bind(params.offset)
+    .bind(limit)
+    .bind(offset)
     .fetch_all(&state.pool)
     .await
     .map_err(|e| {
@@ -299,5 +338,53 @@ pub async fn warm_cache(state: &Arc<BoardCacheState>) {
     match get_topics(State(state.clone())).await {
         Ok(_) => info!("✅ Board topics cache warmed"),
         Err(e) => error!("❌ Failed to warm board topics cache: {:?}", e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn fresh_entry_not_expired() {
+        let entry = CacheEntry {
+            data: 42u32,
+            inserted_at: Instant::now(),
+            ttl: Duration::from_secs(60),
+        };
+        assert!(!entry.is_expired());
+    }
+
+    #[test]
+    fn expired_entry_is_expired() {
+        let entry = CacheEntry {
+            data: 42u32,
+            inserted_at: Instant::now() - Duration::from_secs(120),
+            ttl: Duration::from_secs(60),
+        };
+        assert!(entry.is_expired());
+    }
+
+    #[test]
+    fn zero_ttl_always_expired() {
+        let entry = CacheEntry {
+            data: 42u32,
+            inserted_at: Instant::now() - Duration::from_millis(1),
+            ttl: Duration::ZERO,
+        };
+        assert!(entry.is_expired());
+    }
+
+    #[test]
+    fn boundary_ttl_equal_elapsed_not_expired() {
+        // is_expired uses `>` not `>=`, so an entry whose elapsed is at or
+        // below the TTL must NOT be considered expired.
+        let entry = CacheEntry {
+            data: 42u32,
+            inserted_at: Instant::now(),
+            ttl: Duration::from_secs(60),
+        };
+        assert!(!entry.is_expired());
     }
 }

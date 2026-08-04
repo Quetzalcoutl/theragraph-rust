@@ -21,9 +21,9 @@ pub async fn handler(State(state): State<BundlerState>) -> (StatusCode, Json<Val
                 "sponsorshipActive":   active,
             })),
         ),
-        Err(e) => (
+        Err(_e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "status": "error", "error": e.to_string() })),
+            Json(json!({ "status": "error", "error": "Health check failed" })),
         ),
     }
 }

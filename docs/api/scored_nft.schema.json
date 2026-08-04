@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theragraph.io/api/scored_nft.schema.json",
+  "title": "ScoredNft",
+  "description": "A single scored NFT as returned by recommendation, feed, and trending endpoints. Armin Ronacher: machine-readable contract so any future consumer (mobile, indexer, analytics) can validate payloads without reading Rust source.",
+  "type": "object",
+  "required": ["nft_id", "token_id", "contract_address", "score", "reason", "contract_type", "creator_address", "tags"],
+  "properties": {
+    "nft_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Postgres UUID of the NFT row in the `nfts` table."
+    },
+    "token_id": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "On-chain token ID. Zero is valid (some contracts start at 0)."
+    },
+    "contract_address": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{40}$",
+      "description": "EIP-55 checksummed or lowercase 20-byte Ethereum address of the NFT contract."
+    },
+    "score": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Normalised relevance score in [0, 1]. Higher = more relevant. Not comparable across feed types."
+    },
+    "reason": {
+      "description": "Why this NFT was recommended. Determines which client-side UI badge to show.",
+      "oneOf": [
+        { "$ref": "#/$defs/reason_personalized" },
+        { "$ref": "#/$defs/reason_trending" },
+        { "$ref": "#/$defs/reason_following" },
+        { "$ref": "#/$defs/reason_discovery" },
+        { "$ref": "#/$defs/reason_similar_creator" }
+      ]
+    },
+    "contract_type": {
+      "type": "string",
+      "enum": ["snap", "art", "music", "flix"],
+      "description": "Content category. Maps to the Postgres `contract_type` enum."
+    },
+    "creator_address": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{40}$",
+      "description": "Wallet address of the original creator (minter). Lowercase."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Content tags attached at mint time. May be empty. Used by topic-affinity scoring."
+    }
+  },
+  "$defs": {
+    "reason_personalized": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "personalized" },
+        "details": {
+          "type": "object",
+          "properties": {
+            "matched_tags": { "type": "array", "items": { "type": "string" } },
+            "creator_affinity": { "type": "number" }
+          }
+        }
+      }
+    },
+    "reason_trending": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "trending" },
+        "details": {
+          "type": "object",
+          "properties": {
+            "rank": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "reason_following": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "following" },
+        "details": {
+          "type": "object",
+          "properties": {
+            "creator_address": { "type": "string" }
+          }
+        }
+      }
+    },
+    "reason_discovery": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "discovery" }
+      }
+    },
+    "reason_similar_creator": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "similar_creator" },
+        "details": {
+          "type": "object",
+          "properties": {
+            "similar_to": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

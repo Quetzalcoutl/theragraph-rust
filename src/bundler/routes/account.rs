@@ -3,11 +3,12 @@
 
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Json,
 };
 use alloy::{primitives::Address, providers::Provider};
 use serde_json::{json, Value};
+use subtle::ConstantTimeEq as _;
 use tracing::info;
 
 use crate::bundler::state::BundlerState;
@@ -44,9 +45,9 @@ pub async fn get_account(
                 })),
             )
         }
-        Err(e) => (
+        Err(_e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
+            Json(json!({ "error": "Failed to look up smart account" })),
         ),
     }
 }
@@ -55,7 +56,26 @@ pub async fn get_account(
 pub async fn fund_upgrade(
     State(state): State<BundlerState>,
     Path(owner_str): Path<String>,
+    headers: HeaderMap,
 ) -> (StatusCode, Json<Value>) {
+    // ── Secret gate ───────────────────────────────────────────────────────────
+    match std::env::var("FUND_UPGRADE_SECRET") {
+        Ok(secret) => {
+            let provided = headers
+                .get("x-upgrade-secret")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            let match_: bool = provided.as_bytes().ct_eq(secret.as_bytes()).into();
+            if !match_ {
+                return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Unauthorized" })));
+            }
+        }
+        Err(_) => {
+            // Not configured — endpoint disabled
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" })));
+        }
+    }
+
     let owner: Address = match owner_str.parse() {
         Ok(a) => a,
         Err(_) => {

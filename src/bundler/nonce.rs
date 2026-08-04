@@ -77,7 +77,7 @@ impl NonceManager {
             guard.pending = Some(n);
         }
 
-        let nonce = guard.pending.unwrap();
+        let nonce = guard.pending.expect("NonceManager: pending must be Some after init — logic error");
         Ok(NonceGuard {
             nonce,
             guard,
@@ -121,7 +121,7 @@ pub struct NonceGuard<'a> {
 impl<'a> NonceGuard<'a> {
     /// Advance the local counter after a successful `send_raw_transaction`.
     pub fn commit(&mut self) {
-        self.guard.pending = Some(self.nonce + 1);
+        self.guard.pending = Some(self.nonce.saturating_add(1));
     }
 
     /// Re-fetch the authoritative nonce after a nonce-related error.

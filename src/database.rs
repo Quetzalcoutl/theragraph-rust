@@ -12,7 +12,7 @@ use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 use sqlx::ConnectOptions;
 use std::str::FromStr;
 use std::time::Duration;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, instrument};
 
 /// Database connection pool
 #[derive(Clone)]
@@ -97,9 +97,17 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<PgPool> {
         .acquire_timeout(config.connect_timeout)
         .idle_timeout(Some(config.idle_timeout))
         .max_lifetime(Some(config.max_lifetime))
-        .after_connect(|_conn, _meta| {
+        .after_connect(|conn, _meta| {
             Box::pin(async move {
-                debug!("New database connection established");
+                let timeout_ms: u32 = std::env::var("DB_STATEMENT_TIMEOUT_MS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(8_000);
+                assert!(timeout_ms <= 3_600_000, "implausible DB_STATEMENT_TIMEOUT_MS: {timeout_ms}");
+                sqlx::query(&format!("SET statement_timeout = {timeout_ms}"))
+                    .execute(&mut *conn)
+                    .await?;
+                debug!("New database connection established (statement_timeout={}ms)", timeout_ms);
                 Ok(())
             })
         })
@@ -140,56 +148,6 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<PgPool> {
     Ok(pool)
 }
 
-/// Legacy function for backward compatibility
-#[allow(dead_code)]
-pub async fn create_pool_legacy(database_url: &str) -> Result<PgPool> {
-    let config = DatabaseConfig {
-        url: database_url.to_string(),
-        max_connections: 20,
-        min_connections: 5,
-        connect_timeout: Duration::from_secs(30),
-        idle_timeout: Duration::from_secs(600),
-        max_lifetime: Duration::from_secs(3600),
-        statement_cache_size: 100,
-    };
-    create_pool(&config).await
-}
-
-/// Transaction helper
-#[allow(dead_code)]
-pub struct Transaction<'a> {
-    tx: sqlx::Transaction<'a, sqlx::Postgres>,
-}
-
-impl<'a> Transaction<'a> {
-    /// Begin a new transaction
-    #[allow(dead_code)]
-    pub async fn begin(pool: &'a PgPool) -> Result<Self> {
-        let tx = pool.begin().await?;
-        Ok(Self { tx })
-    }
-
-    /// Commit the transaction
-    #[allow(dead_code)]
-    pub async fn commit(self) -> Result<()> {
-        self.tx.commit().await?;
-        Ok(())
-    }
-
-    /// Rollback the transaction
-    #[allow(dead_code)]
-    pub async fn rollback(self) -> Result<()> {
-        self.tx.rollback().await?;
-        Ok(())
-    }
-
-    /// Get reference to inner transaction for queries
-    #[allow(dead_code)]
-    pub fn inner(&mut self) -> &mut sqlx::Transaction<'a, sqlx::Postgres> {
-        &mut self.tx
-    }
-}
-
 /// Run database migrations
 #[instrument(skip(pool))]
 pub async fn run_migrations(pool: &PgPool) -> Result<()> {
@@ -202,48 +160,6 @@ pub async fn run_migrations(pool: &PgPool) -> Result<()> {
 
     info!("Database migrations completed successfully");
     Ok(())
-}
-
-/// Retry helper for database operations
-#[allow(dead_code)]
-pub async fn with_retry<T, F, Fut>(
-    mut operation: F,
-    max_retries: u32,
-    initial_delay: Duration,
-) -> Result<T>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T>>,
-{
-    let mut delay = initial_delay;
-    let mut last_error = None;
-
-    for attempt in 0..max_retries {
-        match operation().await {
-            Ok(result) => return Ok(result),
-            Err(e) => {
-                if !e.is_retryable() {
-                    return Err(e);
-                }
-
-                warn!(
-                    "Database operation failed (attempt {}/{}): {:?}",
-                    attempt + 1,
-                    max_retries,
-                    e
-                );
-
-                last_error = Some(e);
-
-                if attempt + 1 < max_retries {
-                    tokio::time::sleep(delay).await;
-                    delay = std::cmp::min(delay * 2, Duration::from_secs(30));
-                }
-            }
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| Error::database("Max retries exceeded")))
 }
 
 #[cfg(test)]

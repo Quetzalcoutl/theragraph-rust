@@ -17,11 +17,13 @@
 pub mod account_nonce;
 pub mod config;
 pub mod contracts;
+pub mod error;
 pub mod gas;
 pub mod hash;
 pub mod mempool;
 pub mod nonce;
 pub mod paymaster;
+pub mod reputation;
 pub mod rpc;
 pub mod routes;
 pub mod service;
@@ -33,10 +35,10 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use tower_http::limit::RequestBodyLimitLayer;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-pub use mempool::Mempool;
 pub use service::BundlerService;
 pub use state::BundlerState;
 
@@ -73,7 +75,9 @@ pub async fn init() -> Option<Router> {
     // Verify paymaster config in background (non-blocking)
     {
         let b = bundler.clone();
-        tokio::spawn(async move { b.verify_paymaster_config().await });
+        tokio::spawn(async move {
+            b.verify_paymaster_config().await;
+        });
     }
 
     // ── Batch processor setup ─────────────────────────────────────────────
@@ -82,9 +86,11 @@ pub async fn init() -> Option<Router> {
     // submitting one handleOps tx per batch and routing results back via
     // per-op oneshot channels.
     let (mempool, mempool_rx) = mempool::Mempool::new();
+    let reputation = reputation::SenderReputation::new();
     {
         let b = bundler.clone();
-        mempool::spawn_batch_processor(mempool_rx, b);
+        let rep = reputation.clone();
+        mempool::spawn_batch_processor(mempool_rx, b, rep);
     }
     info!("Batch processor spawned");
 
@@ -97,6 +103,7 @@ pub async fn init() -> Option<Router> {
         store: receipt_store,
         mempool,
         op_nonce_mgr,
+        reputation,
     };
 
     info!("═══════════════════════════════════════════════════════════════");
@@ -118,7 +125,10 @@ pub async fn init() -> Option<Router> {
             "/api/account/:owner/fund-upgrade",
             post(routes::account::fund_upgrade),
         )
-        .with_state(bundler_state);
+        .with_state(bundler_state)
+        // 1 MiB body limit — matches thera-bundler-rust; prevents OOM via
+        // unbounded JSON-RPC payloads before the MAX_BATCH check fires.
+        .layer(RequestBodyLimitLayer::new(1 * 1024 * 1024));
 
     Some(router)
 }

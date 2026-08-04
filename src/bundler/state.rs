@@ -6,6 +6,7 @@ use super::{
     account_nonce::UserOpNonceManager,
     config::Config,
     mempool::Mempool,
+    reputation::SenderReputation,
     service::BundlerService,
     store::ReceiptStore,
 };
@@ -23,4 +24,7 @@ pub struct BundlerState {
     /// /sponsor requests for the same sender receive sequential nonces
     /// instead of all sampling the same on-chain value.
     pub op_nonce_mgr: UserOpNonceManager,
+    /// ERC-7562 sender reputation: throttles senders who repeatedly pass
+    /// simulation but revert on-chain, preventing Paymaster treasury drain.
+    pub reputation:   SenderReputation,
 }

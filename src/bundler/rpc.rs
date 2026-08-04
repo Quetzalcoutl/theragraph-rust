@@ -156,6 +156,10 @@ pub async fn handle_rpc(state: &BundlerState, req: JsonRpcRequest) -> JsonRpcRes
                 },
             };
 
+            if state.reputation.is_throttled(sender) {
+                return JsonRpcResponse::err(id, -32600, "Sender temporarily throttled");
+            }
+
             if body.calls.is_empty() {
                 bail!(-32602, "calls must not be empty");
             }
