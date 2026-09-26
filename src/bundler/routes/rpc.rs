@@ -13,6 +13,15 @@ use crate::bundler::{
 /// Maximum number of JSON-RPC requests allowed in a single batch.
 const MAX_BATCH: usize = 5;
 
+const INTERNAL_ERR: &str = r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Internal error"}}"#;
+
+fn rpc_value(resp: JsonRpcResponse) -> Value {
+    serde_json::to_value(resp).unwrap_or_else(|e| {
+        error!("[rpc] serialize failed: {e}");
+        serde_json::from_str(INTERNAL_ERR).expect("static JSON")
+    })
+}
+
 pub async fn handler(
     State(state): State<BundlerState>,
     Json(body): Json<Value>,
@@ -20,7 +29,7 @@ pub async fn handler(
     if let Some(arr) = body.as_array() {
         if arr.len() > MAX_BATCH {
             let resp = JsonRpcResponse::err(None, -32600, format!("Batch too large (max {MAX_BATCH})"));
-            return (StatusCode::BAD_REQUEST, Json(serde_json::to_value(resp).unwrap_or_else(|_| serde_json::json!({"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Internal error"}}))));
+            return (StatusCode::BAD_REQUEST, Json(rpc_value(resp)));
         }
         let futs: Vec<_> = arr
             .iter()
@@ -46,7 +55,7 @@ pub async fn handler(
                 error!("[rpc] batch task failed: {e}");
                 JsonRpcResponse::err(None, -32603, "Internal server error")
             });
-            responses.push(serde_json::to_value(resp).unwrap_or_else(|e| { tracing::error!("[rpc] serialize failed: {e}"); serde_json::json!({"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Internal error"}}) }));
+            responses.push(rpc_value(resp));
         }
 
         return (StatusCode::OK, Json(Value::Array(responses)));
@@ -56,12 +65,12 @@ pub async fn handler(
         Ok(r)  => r,
         Err(e) => {
             let resp = JsonRpcResponse::err(None, -32700, format!("Parse error: {e}"));
-            return (StatusCode::BAD_REQUEST, Json(serde_json::to_value(resp).unwrap_or_else(|e| { tracing::error!("[rpc] serialize failed: {e}"); serde_json::json!({"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Internal error"}}) })));
+            return (StatusCode::BAD_REQUEST, Json(rpc_value(resp)));
         }
     };
 
     debug!("RPC method={}", req.method);
     let resp = handle_rpc(&state, req).await;
     let status = StatusCode::OK; // JSON-RPC 2.0: always 200; errors are in the response body
-    (status, Json(serde_json::to_value(resp).unwrap_or_else(|e| { tracing::error!("[rpc] serialize failed: {e}"); serde_json::json!({"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Internal error"}}) })))
+    (status, Json(rpc_value(resp)))
 }

@@ -24,17 +24,17 @@
 //! WHERE id IN (...);
 //! ```
 
-use once_cell::sync::Lazy;
 use sqlx::PgPool;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::LazyLock;
 use tracing::{error, warn};
 
 // ── Sliding-window rate limiter ───────────────────────────────────────────────
 
 /// Timestamp (unix seconds) when the current 60-second rate window started.
-static RATE_WINDOW_START: Lazy<AtomicU64> = Lazy::new(|| AtomicU64::new(0));
+static RATE_WINDOW_START: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 /// Number of DLQ inserts attempted in the current rate window.
-static RATE_WINDOW_COUNT: Lazy<AtomicU64> = Lazy::new(|| AtomicU64::new(0));
+static RATE_WINDOW_COUNT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
 /// Max DLQ DB inserts per 60-second window. Prevents a Nebula outage from
 /// flooding the Postgres table. Prometheus counter always increments — only the
@@ -42,7 +42,7 @@ static RATE_WINDOW_COUNT: Lazy<AtomicU64> = Lazy::new(|| AtomicU64::new(0));
 ///
 /// Override via `NEBULA_DLQ_RATE_LIMIT_PER_MIN` env var (default: 100).
 fn dlq_rate_limit() -> u64 {
-    static LIMIT: Lazy<u64> = Lazy::new(|| {
+    static LIMIT: LazyLock<u64> = LazyLock::new(|| {
         std::env::var("NEBULA_DLQ_RATE_LIMIT_PER_MIN")
             .ok()
             .and_then(|v| v.parse().ok())

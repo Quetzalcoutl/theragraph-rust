@@ -36,28 +36,14 @@ mod events;
 mod indexer;
 mod kafka;
 mod recommendation;
+mod state;
+
+pub use state::AppState;
 
 use config::Config;
 use database::Database;
 use error::Result;
 use kafka::KafkaProducer;
-
-/// Application state shared across components
-pub struct AppState {
-    pub config: Arc<Config>,
-    pub db: Database,
-    pub elixir_db: Database,
-    pub kafka: KafkaProducer,
-    pub shutdown: broadcast::Sender<()>,
-    pub rec_cache: Option<recommendation::cache::RecCache>,
-    pub graph_client: Arc<dyn recommendation::graph_client::GraphTraversal>,
-    /// Set when KAFKA_ENABLED=false so indexers can write preference signals directly.
-    pub direct_handlers: Option<Arc<event_processor::DirectHandlers>>,
-    /// RS-03: TaskTracker for fire-and-forget graph write tasks.
-    /// Tracked spawns (recommended_to batch writes, view_event / comments_on edges)
-    /// are awaited during shutdown so no in-flight Nebula writes are orphaned.
-    pub task_tracker: Arc<tokio_util::task::TaskTracker>,
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -119,6 +105,22 @@ async fn main() -> Result<()> {
     info!("📦 Running database migrations...");
     database::run_migrations(db.pool()).await?;
     info!("✅ Database migrations applied");
+
+    // Dedicated small pool for the blockchain indexer so hourly recommendation
+    // update bursts (10 concurrent tasks) cannot starve cursor writes.
+    // INDEXER_POOL_SIZE defaults to 5 — enough for sequential block batches.
+    let indexer_pool_size = std::env::var("INDEXER_POOL_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(5);
+    let indexer_db_config = {
+        let mut c = config.database.clone();
+        c.max_connections = indexer_pool_size;
+        c.min_connections = 2;
+        c
+    };
+    let indexer_db = Database::new(&indexer_db_config).await?;
+    info!("✅ Indexer pool created (max={indexer_pool_size})");
 
     // Initialize Elixir database connection
     info!("🔗 Connecting to Elixir database...");
@@ -219,6 +221,7 @@ async fn main() -> Result<()> {
     let state = Arc::new(AppState {
         config: config.clone(),
         db: db.clone(),
+        indexer_db: indexer_db.clone(),
         elixir_db: elixir_db.clone(),
         kafka: kafka_producer.clone(),
         shutdown: shutdown_tx.clone(),
@@ -301,6 +304,7 @@ async fn main() -> Result<()> {
     // Cleanup resources
     kafka_producer.flush(Duration::from_secs(5));
     db.close().await;
+    indexer_db.close().await;
 
     info!("👋 TheraGraph Engine stopped gracefully");
     Ok(())
@@ -367,29 +371,16 @@ fn spawn_indexers(state: Arc<AppState>) -> Vec<tokio::task::JoinHandle<()>> {
 
 /// Spawn the recommendation score updater
 fn spawn_score_updater(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
-    let mut shutdown_rx = state.shutdown.subscribe();
-
+    let shutdown_rx = state.shutdown.subscribe();
+    let interval = tokio::time::interval(state.config.recommendation.engagement_update_interval);
     tokio::spawn(async move {
-        let update_interval = state.config.recommendation.engagement_update_interval;
-        let mut interval = tokio::time::interval(update_interval);
-
-        // Skip first tick (runs immediately otherwise)
-        interval.tick().await;
-
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    // TAG-S26-02: select_active_users queries likes/comments/purchases/follows/social_users
-                    // which are all in the Elixir DB — not the rec DB. Using state.db caused every
-                    // query to fail (relation not found) and the updater loop was permanently a no-op.
-                    run_score_update_cycle(state.elixir_db.pool(), state.graph_client.clone(), state.rec_cache.clone()).await;
-                }
-                _ = shutdown_rx.recv() => {
-                    info!("Score updater shutting down");
-                    break;
-                }
-            }
-        }
+        // TAG-S26-02: select_active_users queries Elixir DB tables — use elixir_db pool.
+        run_periodic("Score updater", shutdown_rx, interval, || {
+            let pool = state.elixir_db.pool().clone();
+            let gc   = state.graph_client.clone();
+            let rc   = state.rec_cache.clone();
+            async move { run_score_update_cycle(&pool, gc, rc).await }
+        }).await;
     })
 }
 
@@ -402,43 +393,29 @@ fn spawn_score_updater(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
 /// All sync_* calls are idempotent — re-writing an edge that already exists is a no-op
 /// (sync_purchase uses IF NOT EXISTS; sync_like and sync_comment upsert by rank).
 fn spawn_nebula_reconciler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
-    let mut shutdown_rx = state.shutdown.subscribe();
-
+    let shutdown_rx = state.shutdown.subscribe();
     tokio::spawn(async move {
-        // Wait 5 minutes after startup: gives the Kafka consumer time to
-        // catch up on recent blocks before the first reconciliation pass fires.
+        // 5-min startup delay: lets Kafka consumer catch up before first reconciliation.
         tokio::time::sleep(Duration::from_secs(300)).await;
-
         let mut interval = tokio::time::interval(Duration::from_secs(6 * 3600));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    info!("🔁 Running Nebula edge reconciliation (48h lookback)...");
-                    let dyn_client = recommendation::graph_client::GraphClient::from_dyn_traversal(
-                        Arc::clone(&state.graph_client)
-                    );
-                    let graph_sync = event_processor::graph_sync::GraphSync::new(dyn_client);
-                    match event_processor::reconciliation::reconcile_nebula_edges(
-                        state.elixir_db.pool(),
-                        &graph_sync,
-                        48,
-                    ).await {
-                        Ok(stats) => info!(
-                            "✅ Nebula reconciliation: likes={} purchases={} comments={} failed={}",
-                            stats.likes_attempted, stats.purchases_attempted,
-                            stats.comments_attempted, stats.total_failed
-                        ),
-                        Err(e) => error!("Nebula reconciliation failed: {e}"),
-                    }
-                }
-                _ = shutdown_rx.recv() => {
-                    info!("Nebula reconciler shutting down");
-                    break;
+        run_periodic("Nebula reconciler", shutdown_rx, interval, || {
+            let pool = state.elixir_db.pool().clone();
+            let gc   = Arc::clone(&state.graph_client);
+            async move {
+                info!("🔁 Running Nebula edge reconciliation (48h lookback)...");
+                let dyn_client = recommendation::graph_client::GraphClient::from_dyn_traversal(gc);
+                let graph_sync = event_processor::graph_sync::GraphSync::new(dyn_client);
+                match event_processor::reconciliation::reconcile_nebula_edges(&pool, &graph_sync, 48).await {
+                    Ok(stats) => info!(
+                        "✅ Nebula reconciliation: likes={} purchases={} comments={} failed={}",
+                        stats.likes_attempted, stats.purchases_attempted,
+                        stats.comments_attempted, stats.total_failed
+                    ),
+                    Err(e) => error!("Nebula reconciliation failed: {e}"),
                 }
             }
-        }
+        }).await;
     })
 }
 
@@ -451,55 +428,59 @@ fn spawn_nebula_reconciler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> 
 ///
 /// All stored queries use IF NOT EXISTS / UPSERT — replaying is idempotent.
 fn spawn_nebula_dlq_replayer(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
-    let mut shutdown_rx = state.shutdown.subscribe();
-
+    let shutdown_rx = state.shutdown.subscribe();
     tokio::spawn(async move {
-        // Jobs audit: run immediately on startup. If Nebula just came back after
-        // an outage, the DLQ may have 50+ pending rows. Making operators wait
-        // up to 17 minutes (2-min delay + 15-min interval) to see them replay
-        // is bad UX. Run once at startup, then every 15 minutes.
-        let run_once = async {
-            match recommendation::graph_dlq::replay_pending(
-                state.elixir_db.pool(),
-                state.graph_client.as_ref(),
-            ).await {
-                Ok(stats) if stats.total > 0 => info!(
-                    "♻️  DLQ startup replay: total={} replayed={} failed={}",
-                    stats.total, stats.replayed, stats.failed
-                ),
-                Ok(_) => {}
-                Err(e) => error!("DLQ replayer startup run failed: {e}"),
-            }
-        };
-        run_once.await;
+        // Run once at startup: DLQ may have rows from a recent Nebula outage.
+        run_dlq_replay(state.elixir_db.pool(), state.graph_client.as_ref(), true).await;
 
         let mut interval = tokio::time::interval(Duration::from_secs(15 * 60));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        // Skip first tick since we just ran above.
-        interval.tick().await;
-
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    match recommendation::graph_dlq::replay_pending(
-                        state.elixir_db.pool(),
-                        state.graph_client.as_ref(),
-                    ).await {
-                        Ok(stats) if stats.total > 0 => info!(
-                            "♻️  DLQ replay: total={} replayed={} failed={}",
-                            stats.total, stats.replayed, stats.failed
-                        ),
-                        Ok(_) => {}
-                        Err(e) => error!("DLQ replayer query failed: {e}"),
-                    }
-                }
-                _ = shutdown_rx.recv() => {
-                    info!("DLQ replayer shutting down");
-                    break;
-                }
-            }
-        }
+        run_periodic("DLQ replayer", shutdown_rx, interval, || {
+            let pool = state.elixir_db.pool().clone();
+            let gc   = Arc::clone(&state.graph_client);
+            async move { run_dlq_replay(&pool, gc.as_ref(), false).await }
+        }).await;
     })
+}
+
+async fn run_dlq_replay(
+    pool: &sqlx::PgPool,
+    graph_client: &dyn recommendation::graph_client::GraphTraversal,
+    startup: bool,
+) {
+    match recommendation::graph_dlq::replay_pending(pool, graph_client).await {
+        Ok(stats) if stats.total > 0 => info!(
+            "♻️  DLQ {}replay: total={} replayed={} failed={}",
+            if startup { "startup " } else { "" },
+            stats.total, stats.replayed, stats.failed
+        ),
+        Ok(_) => {}
+        Err(e) => error!("DLQ replayer {} failed: {e}", if startup { "startup" } else { "query" }),
+    }
+}
+
+/// Drive a periodic task until `shutdown_rx` fires.
+///
+/// Skips the first tick so the task doesn't fire immediately on startup.
+/// All three periodic jobs (score updater, reconciler, DLQ replayer) use
+/// this so the `select!` + shutdown boilerplate lives in one place.
+async fn run_periodic<F, Fut>(
+    name: &'static str,
+    mut shutdown_rx: broadcast::Receiver<()>,
+    mut interval: tokio::time::Interval,
+    mut work: F,
+)
+where
+    F: FnMut() -> Fut + Send,
+    Fut: Future<Output = ()> + Send,
+{
+    interval.tick().await; // skip first tick
+    loop {
+        tokio::select! {
+            _ = interval.tick() => { work().await; }
+            _ = shutdown_rx.recv() => { info!("{name} shutting down"); break; }
+        }
+    }
 }
 
 /// One full score-update pass. Extracted so it can be tested and called independently.
@@ -616,19 +597,13 @@ fn spawn_api_server(
     state: Arc<AppState>,
     bundler_router: Option<axum::Router>,
 ) -> tokio::task::JoinHandle<()> {
-    let port = state.config.api.port;
-    let cors_origins = state.config.api.cors_origins.clone();
-    let pool = state.elixir_db.pool().clone();  // Use Elixir DB for NFT queries
-    let rec_cache = state.rec_cache.clone();
+    let api_config   = state.config.api.clone();
+    let pool         = state.elixir_db.pool().clone();
+    let rec_cache    = state.rec_cache.clone();
     let graph_client = Arc::clone(&state.graph_client);
     let task_tracker = Arc::clone(&state.task_tracker);
-
-    // RS-02: Axum's with_graceful_shutdown() handles the shutdown signal internally
-    // inside start_server, so we no longer need a tokio::select! here to kill it.
-    // The task simply runs until start_server returns (which happens when the OS
-    // signal fires and all in-flight connections have drained).
     tokio::spawn(async move {
-        if let Err(e) = api::start_server(pool, port, bundler_router, rec_cache, cors_origins, Some(graph_client), task_tracker).await {
+        if let Err(e) = api::start_server(pool, api_config, bundler_router, rec_cache, Some(graph_client), task_tracker).await {
             error!("API server error: {:?}", e);
         }
     })

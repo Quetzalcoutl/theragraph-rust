@@ -15,6 +15,7 @@
 //   the same Tokio runtime and Axum server for zero-overhead integration.
 
 pub mod account_nonce;
+pub mod chain_client;
 pub mod config;
 pub mod contracts;
 pub mod error;
@@ -22,6 +23,7 @@ pub mod gas;
 pub mod hash;
 pub mod mempool;
 pub mod nonce;
+pub mod op_encoding;
 pub mod paymaster;
 pub mod reputation;
 pub mod rpc;
@@ -120,9 +122,9 @@ pub async fn init() -> Option<Router> {
         .route("/rpc", post(routes::rpc::handler))
         .route("/api/sponsor", post(routes::sponsor::handler))
         .route("/api/submit", post(routes::submit::handler))
-        .route("/api/account/:owner", get(routes::account::get_account))
+        .route("/api/account/{owner}", get(routes::account::get_account))
         .route(
-            "/api/account/:owner/fund-upgrade",
+            "/api/account/{owner}/fund-upgrade",
             post(routes::account::fund_upgrade),
         )
         .with_state(bundler_state)

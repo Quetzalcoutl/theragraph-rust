@@ -1,11 +1,11 @@
 //! TheraSocial unified contract indexer
 //!
-//! Indexes unified events (ContentMinted, ContentLiked, ContentCopyMinted, ContentCommented, ContentBlocked)
+//! Indexes unified events (ContentMinted, ContentCopyMinted, ListingUpdated, ContentBlocked)
 
 use crate::error::{Error, Result};
 use crate::indexer::{get_last_indexed_block, parse_address, ContractType, GenericIndexer};
 use crate::AppState;
-use ethers::prelude::*;
+use alloy::{network::Ethereum, providers::RootProvider};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,11 +20,12 @@ impl ContractType for TheraSocialContract {
 
 pub async fn run_with_state(state: Arc<AppState>) -> Result<()> {
     let contract_address = parse_address(state.config.contracts.thera_friendz.as_str())?;
-    let provider = Provider::<Http>::try_from(state.config.blockchain.rpc_url.as_str())
-        .map_err(|e| Error::blockchain(format!("Failed to create provider: {}", e)))?;
+    let provider = RootProvider::<Ethereum>::new_http(
+        state.config.blockchain.rpc_url.parse().map_err(|e| Error::blockchain(format!("Invalid RPC URL: {e}")))?,
+    );
 
     let start_block = get_last_indexed_block(
-        state.db.pool(),
+        state.indexer_db.pool(),
         &format!("{:?}", contract_address),
         "friends",
     )
@@ -38,7 +39,7 @@ pub async fn run_with_state(state: Arc<AppState>) -> Result<()> {
         provider: Arc::new(provider),
         contract_address,
         kafka: state.kafka.clone(),
-        pool: state.db.pool().clone(),
+        pool: state.indexer_db.pool().clone(),
         poll_interval: state.config.blockchain.poll_interval,
         batch_size: state.config.blockchain.batch_size,
         current_block: start_block,

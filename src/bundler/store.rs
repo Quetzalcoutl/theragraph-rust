@@ -20,11 +20,16 @@ fn now_secs() -> u64 {
 }
 
 // Memory entry pairs receipt JSON with insertion timestamp for TTL enforcement.
-type MemEntry = (String, u64); // (json, inserted_at_secs)
+// Box<str> not String for both fields: entries are inserted once (via
+// `.insert()`, never mutated in place) and self-prune on every write via
+// `.retain()` — the map holds up to 24h of receipts, so the 8-byte capacity
+// field String carries on both the key and the JSON value is real, ongoing
+// waste for however many receipts accumulate in that window.
+type MemEntry = (Box<str>, u64); // (json, inserted_at_secs)
 
 enum Backend {
     Redis(ConnectionManager),
-    Memory(Arc<DashMap<String, MemEntry>>),
+    Memory(Arc<DashMap<Box<str>, MemEntry>>),
 }
 
 /// Thread-safe, `Clone`-cheap receipt store.
@@ -73,7 +78,7 @@ impl ReceiptStore {
             Backend::Memory(map) => {
                 // Evict expired entries on write to keep map bounded
                 map.retain(|_, (_, inserted)| now_secs().saturating_sub(*inserted) < TTL_SECS);
-                map.insert(key, (value, now_secs()));
+                map.insert(key.into_boxed_str(), (value.into_boxed_str(), now_secs()));
             }
         }
         debug!("Stored receipt for {:#x}", user_op_hash);
@@ -90,10 +95,10 @@ impl ReceiptStore {
                     .unwrap_or(None)
             }
             Backend::Memory(map) => {
-                map.get(&key).and_then(|r| {
+                map.get(key.as_str()).and_then(|r| {
                     let (json, inserted) = r.value();
                     if now_secs().saturating_sub(*inserted) < TTL_SECS {
-                        Some(json.clone())
+                        Some(json.as_ref().to_owned())
                     } else {
                         None // expired — will be pruned on next write
                     }

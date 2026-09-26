@@ -30,6 +30,8 @@ pub mod candidate_repository;
 pub mod coalescer;
 pub mod engine;
 pub mod recommended_to_buffer;
+pub mod feature_extractor;
+pub mod feature_store;
 pub mod features;
 pub mod graph_client;
 pub mod graph_dlq;
@@ -39,6 +41,7 @@ pub mod preferences;
 pub mod recorder;
 pub mod schema_consts;
 pub mod scoring;
+pub mod tag_interner;
 pub mod types;
 pub mod updater;
 pub mod metrics;
@@ -46,7 +49,7 @@ pub mod weights;
 pub mod feedsource_impls;
 
 // Re-export the types that are actually used externally
-pub use engine::ScoredNft;
+pub use scoring::ScoredNft;
 pub use preferences::UserPreferences;
 // Metrics are used internally by the engine
 

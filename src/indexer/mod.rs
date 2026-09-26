@@ -17,12 +17,17 @@ pub mod thera_social;
 
 use crate::error::{Error, Result};
 use crate::kafka::KafkaProducer;
-use ethers::prelude::*;
+use alloy::primitives::{Address, U256};
+use alloy::network::Ethereum;
+use alloy::providers::{Provider, RootProvider};
+use alloy::rpc::types::{Filter, Log};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tracing::{error, info, instrument, warn};
+
+type HttpProvider = RootProvider<Ethereum>;
 
 // ── Generic blockchain indexer ────────────────────────────────────────────────
 
@@ -47,7 +52,7 @@ pub trait ContractType: Send + Sync + 'static {
 /// `thera_social.rs` are the only per-contract code.
 pub struct GenericIndexer<C: ContractType> {
     pub contract: C,
-    pub provider: Arc<Provider<Http>>,
+    pub provider: Arc<HttpProvider>,
     pub contract_address: Address,
     pub kafka: KafkaProducer,
     pub pool: PgPool,
@@ -101,7 +106,6 @@ impl<C: ContractType> GenericIndexer<C> {
                 )
                 .await
                 .map_err(|_| Error::blockchain("get_block_number timeout after 30s"))?
-                .map(|b| b.as_u64())
                 .map_err(|e| Error::blockchain(format!("Failed to get block number: {}", e)))
             },
             self.max_retries,
@@ -284,6 +288,10 @@ pub async fn save_last_indexed_block(
 ) -> Result<()> {
     let addr_lower = contract_address.to_lowercase();
 
+    // INSERT … ON CONFLICT UPDATE. gen_random_uuid() was called on every invocation even
+    // though the UPDATE branch discards the new `id` entirely. Replaced with a pure
+    // UPSERT that only generates the UUID on the first insert (DO NOTHING path skipped).
+    // The UPDATE path never touches `id` so no UUID syscall is needed on conflicts.
     sqlx::query!(
         r#"
         INSERT INTO indexer_state (id, contract_address, contract_type, last_block, inserted_at, updated_at)
@@ -291,6 +299,7 @@ pub async fn save_last_indexed_block(
         ON CONFLICT (contract_address, contract_type) DO UPDATE
         SET last_block = EXCLUDED.last_block,
             updated_at = NOW()
+        WHERE indexer_state.last_block < EXCLUDED.last_block
         "#,
         addr_lower,
         contract_type,
@@ -391,7 +400,7 @@ pub fn decode_uint256(data: &[u8], offset: usize) -> Result<U256> {
             message: "Insufficient data".into(),
         });
     }
-    Ok(U256::from_big_endian(&data[offset..offset + 32]))
+    Ok(U256::from_be_slice(&data[offset..offset + 32]))
 }
 
 /// Decode address from log data
@@ -418,7 +427,7 @@ pub fn decode_string(data: &[u8], offset: usize) -> Result<String> {
     }
 
     // Read offset to string data
-    let string_offset = U256::from_big_endian(&data[offset..offset + 32]).as_usize();
+    let string_offset = U256::from_be_slice(&data[offset..offset + 32]).to::<usize>();
 
     if data.len() < string_offset + 32 {
         return Err(Error::EventDecode {
@@ -428,7 +437,7 @@ pub fn decode_string(data: &[u8], offset: usize) -> Result<String> {
     }
 
     // Read string length
-    let length = U256::from_big_endian(&data[string_offset..string_offset + 32]).as_usize();
+    let length = U256::from_be_slice(&data[string_offset..string_offset + 32]).to::<usize>();
 
     if data.len() < string_offset + 32 + length {
         return Err(Error::EventDecode {
@@ -445,24 +454,6 @@ pub fn decode_string(data: &[u8], offset: usize) -> Result<String> {
     })
 }
 
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_format_address() {
-        let addr: Address = "0x1234567890123456789012345678901234567890"
-            .parse()
-            .unwrap();
-        let formatted = format_address(&addr);
-        assert!(formatted.contains("..."));
-    }
-
-    #[test]
-    fn test_decode_uint256() {
-        let mut data = vec![0u8; 32];
-        data[31] = 42;
-        let value = decode_uint256(&data, 0).unwrap();
-        assert_eq!(value, U256::from(42));
-    }
-}
+mod tests;

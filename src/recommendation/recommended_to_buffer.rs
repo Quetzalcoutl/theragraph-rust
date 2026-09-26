@@ -5,9 +5,11 @@
 //! connections. This module serialises all writes through a single background
 //! task that drains the channel every 500ms or 100 items — whichever comes first.
 //!
-//! One Nebula round trip per flush (all users in one nGQL script when possible)
-//! vs one round trip per user per serve. At 3300 rps and 500ms flush interval =
-//! at most 1650 items per flush, one TCP round trip.
+//! One Nebula round trip per flush: `do_flush` calls `write_recommended_to_batch_multi`
+//! which concatenates all users' nGQL into a single script and fires one `execute_write`.
+//! Min-max score normalisation is applied per-user before concatenation so relative
+//! rankings are preserved across users.
+//! At 3300 rps and 500ms flush interval = at most 1650 items per flush, one TCP round trip.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -17,7 +19,7 @@ use tracing::{warn};
 
 use super::graph_client::GraphTraversal;
 
-pub type WriteItem = (String, Vec<(String, f32)>);
+pub type WriteItem = (String, Box<[(Box<str>, f32)]>);
 
 /// Channel-side handle used by `RecommendationEngine::spawn_feedback_write`.
 pub type RecommendedToSender = mpsc::Sender<WriteItem>;
@@ -63,7 +65,8 @@ async fn flush_loop(
             None => return, // channel closed — engine dropped
         };
 
-        let mut batch: Vec<WriteItem> = vec![first];
+        let mut batch: Vec<WriteItem> = Vec::with_capacity(FLUSH_BATCH_SIZE);
+        batch.push(first);
         let deadline = Instant::now() + FLUSH_INTERVAL;
 
         // Drain remaining items until flush interval or batch limit.
@@ -98,11 +101,12 @@ async fn do_flush(batch: &[WriteItem], graph_client: &dyn GraphTraversal) {
     metrics::counter!("rec_recommended_to_buffer_flushes_total").increment(1);
     metrics::histogram!("rec_recommended_to_buffer_batch_size").record(batch.len() as f64);
 
-    for (addr, pairs) in batch {
-        let refs: Vec<(&str, f32)> = pairs.iter().map(|(id, s)| (id.as_str(), *s)).collect();
-        if let Err(e) = graph_client.write_recommended_to_batch(addr, &refs).await {
-            warn!("recommended_to buffer flush failed for {addr}: {e}");
-            metrics::counter!("rec_recommended_to_buffer_write_failures_total").increment(1);
-        }
+    // Single Nebula round-trip for all users in this flush batch:
+    // write_recommended_to_batch_multi concatenates per-user nGQL bodies (each
+    // min-max normalised independently) behind one USE statement, then calls
+    // execute_write once rather than once per user.
+    if let Err(e) = graph_client.write_recommended_to_batch_multi(batch).await {
+        warn!("recommended_to buffer flush failed ({} users): {e}", batch.len());
+        metrics::counter!("rec_recommended_to_buffer_write_failures_total").increment(1);
     }
 }

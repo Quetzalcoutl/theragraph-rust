@@ -34,15 +34,16 @@ pub struct PaymasterSigner {
 }
 
 impl PaymasterSigner {
-    pub fn new(config: &Config) -> Result<Self> {
-        let signer: PrivateKeySigner = config.private_key.parse()?;
-        Ok(Self {
+    /// Build from a pre-parsed signer — avoids re-parsing the private key when
+    /// BundlerService::new() already holds one.
+    pub fn with_signer(signer: PrivateKeySigner, config: &Config) -> Self {
+        Self {
             signer,
             paymaster:                   config.paymaster,
             chain_id:                    config.chain_id,
             pm_verification_gas_limit:   config.gas.paymaster_verification_gas_limit as u128,
             pm_post_op_gas_limit:        config.gas.paymaster_post_op_gas_limit as u128,
-        })
+        }
     }
 
     #[allow(dead_code)]

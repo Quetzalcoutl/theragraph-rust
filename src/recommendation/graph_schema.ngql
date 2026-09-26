@@ -1,51 +1,50 @@
--- NebulaGraph Schema for TheraGraph Recommendation Engine
--- Designed for high-performance social graph traversal (ByteGraph Style)
+-- Nebula graph schema reference — REGENERATED 2026-09-06.
+--
+-- This file previously described an early prototype schema (space
+-- "thera_social", FIXED_STRING(42) VIDs, 2 edge types) that no longer matches
+-- production. It was stale enough to produce a broken schema if used to
+-- bootstrap a fresh Nebula space. Do not treat this file as executable or as
+-- a migration script — it is a plain-text index of names for humans.
+--
+-- Source of truth for edge/prop names: schema_consts/mod.rs (this crate).
+-- Source of truth for actual space/schema DDL: migrations/*.ngql, applied to
+-- the running Nebula cluster (managed separately — see theragraph-nebula).
+-- If this file and schema_consts/mod.rs ever disagree, schema_consts wins.
 
--- 1. Create Space with optimal partition_num (usually 10x cluster nodes)
-CREATE SPACE IF NOT EXISTS thera_social (partition_num=10, replica_factor=1, vid_type=FIXED_STRING(42));
-USE thera_social;
+-- Space
+--   name:      "theragraph"           (SPACE_THERAGRAPH)
+--   vid_type:  FIXED_STRING(64)       (VID_MAX_LEN)
 
--- 2. Define Tags (Properties on Vertices)
--- User Vertex
-CREATE TAG IF NOT EXISTS user(
-    username string,
-    reputation double DEFAULT 0.0,
-    created_at timestamp
-);
+-- Edge types (name — purpose)
+--   follows            — user → user, active social follow
+--   likes              — user → post, reaction_type distinguishes like/purchase-as-like
+--   purchases          — user → post, dedicated purchase edge (migration 15)
+--   view_event         — user → post, dwell-time view
+--   creator_affinity   — user → user, accumulated view-derived affinity toward a creator
+--   recommended_to     — user → post, served-recommendation audit trail (feedback loop)
+--   comments_on        — user → post
+--   bookmarked         — user → post
+--   shared             — user → post
+--   music_listen       — user → post, pct_played-weighted
+--   flix_watch         — user → post, pct_played + rewatch_count weighted
+--   style_preference   — user → style:{tag} vertex, AiFriendz companion chat signal
+--   genre_preference   — user → genre:{slug} vertex, declared listener taste
+--                         (write_genre_preference_edges, up to 30 slugs; also
+--                         written narrowly by the companion-signal path, max 3)
+--                         (GENRE-01, 2026-09-07: destination VID is now a
+--                         kebab-case slug — the same slug namespace NFT
+--                         content tags use, folded in at ingestion by
+--                         event_processor::elixir_db::process_enrichment.
+--                         This replaced the old opaque numeric `genre:{id}`
+--                         format, which had no id→name mapping reachable from
+--                         this crate and so was written but never read back.
+--                         Now read live by graph_client::get_genre_preferences
+--                         and applied as a scoring boost in engine/boost.rs.)
 
--- NFT Vertex
-CREATE TAG IF NOT EXISTS nft(
-    token_id int,
-    contract_address string,
-    category string, -- 'art', 'music', 'flix', 'snap'
-    score double DEFAULT 0.0
-);
-
--- 3. Define Edge Types (Relationships)
--- Follows: directed graph for "Friend of Friend" logic
-CREATE EDGE IF NOT EXISTS follows(
-    created_at timestamp,
-    weight double DEFAULT 1.0
-);
-
--- Likes: User -> NFT affinity
-CREATE EDGE IF NOT EXISTS likes(
-    created_at timestamp,
-    weight double DEFAULT 1.0
-);
-
--- 4. Indexes for fast lookup
-CREATE TAG INDEX IF NOT EXISTS user_username_index ON user(username(20));
-CREATE TAG INDEX IF NOT EXISTS nft_contract_index ON nft(contract_address(42));
-CREATE EDGE INDEX IF NOT EXISTS follows_index ON follows();
-CREATE EDGE INDEX IF NOT EXISTS likes_index ON likes();
-
--- 5. Example "Dream Team" Query: Friend-of-Friend Recommendations
--- "Find NFTs liked by people my friends follow"
-/*
-GO FROM "user_1" OVER follows YIELD dst(edge) AS friend_id
-| GO FROM $-.friend_id OVER likes YIELD dst(edge) AS nft_id
-| FETCH PROP ON nft $-.nft_id YIELD vertex as v, properties(vertex).score as score
-| ORDER BY score DESC
-| LIMIT 20;
-*/
+-- Common edge properties (not every edge has every property — see the
+-- PROP_* constants in schema_consts/mod.rs for the authoritative per-edge set)
+--   weight, score, event_id, followed_at, liked_at, commented_at, purchased_at,
+--   bookmarked_at, shared_at, watched_at, listened_at, computed_at, event_time,
+--   duration_seconds, pct_played, rewatch_count, reaction_type, comment_text,
+--   confidence, time_context, source, served, total_views,
+--   total_duration_secs, affinity_score, last_interaction_at

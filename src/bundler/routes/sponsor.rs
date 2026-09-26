@@ -23,43 +23,24 @@ pub async fn handler(
         None => match body.owner_address {
             Some(owner) => match state.bundler.get_smart_account_address(owner).await {
                 Ok(addr) => addr,
-                Err(e)   => {
+                Err(e) => {
                     error!("[sponsor] address lookup failed: {e}");
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({ "error": "Invalid owner address or account not found" })),
-                    )
+                    return super::bad_request("Invalid owner address or account not found");
                 }
             },
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "Provide sender or ownerAddress" })),
-                )
-            }
+            None => return super::bad_request("Provide sender or ownerAddress"),
         },
     };
 
     if body.calls.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "calls array is required" })),
-        );
+        return super::bad_request("calls array is required");
     }
-
     if body.calls.len() > MAX_CALLS {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": format!("Too many calls (max {MAX_CALLS})") })),
-        );
+        return super::bad_request(format!("Too many calls (max {MAX_CALLS})"));
     }
-
     for call in &body.calls {
         if call.data.len() > MAX_CALL_DATA {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("call.data exceeds maximum of {MAX_CALL_DATA} bytes") })),
-            );
+            return super::bad_request(format!("call.data exceeds maximum of {MAX_CALL_DATA} bytes"));
         }
     }
 
@@ -100,10 +81,7 @@ pub async fn handler(
         }
         Err(e) => {
             error!("[sponsor] {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "Failed to build sponsored UserOp" })),
-            )
+            super::internal_error("Failed to build sponsored UserOp")
         }
     }
 }

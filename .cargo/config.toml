@@ -21,3 +21,12 @@ MACOSX_DEPLOYMENT_TARGET = "14.0"
 # to DATABASE_URL. Required for `cargo build` to work without a live postgres.
 # The .sqlx/ directory in this repo contains all pre-generated query metadata.
 SQLX_OFFLINE = "true"
+# rdkafka-sys builds librdkafka from source via CMake, which needs OpenSSL and
+# libsasl2. Both are installed via Homebrew but are keg-only (not symlinked
+# into /usr/local by default), so CMake's find_package(OpenSSL) and
+# pkg_check_modules(libsasl2) can't see them without explicit paths — this
+# was failing with "OpenSSL::SSL target not found" / "Package 'libsasl2' not
+# found" even though `brew list` shows both installed.
+OPENSSL_ROOT_DIR = "/usr/local/opt/openssl@3"
+PKG_CONFIG_PATH = "/usr/local/opt/openssl@3/lib/pkgconfig:/usr/local/opt/cyrus-sasl/lib/pkgconfig"
+CMAKE_PREFIX_PATH = "/usr/local/opt/openssl@3:/usr/local/opt/cyrus-sasl"

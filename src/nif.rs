@@ -13,6 +13,7 @@
 
 use rustler::{Binary, Env, NifResult, OwnedBinary};
 use crate::crypto::dilithium;
+use crate::crypto::eth_signature;
 
 // ── ML-DSA-65 (FIPS 204) post-quantum crypto ─────────────────────────────────
 //
@@ -43,7 +44,7 @@ fn ml_dsa65_keygen(env: Env) -> NifResult<(Binary, Binary)> {
 /// Returns the 3293-byte detached signature allocated directly in BEAM heap.
 /// Inputs are zero-copy refs into the BEAM heap (Binary<'_> vs Vec<u8>).
 #[rustler::nif(name = "ml_dsa65_sign", schedule = "DirtyCpu")]
-fn ml_dsa65_sign(env: Env, message: Binary, secret_key: Binary) -> NifResult<Binary> {
+fn ml_dsa65_sign<'a>(env: Env<'a>, message: Binary<'a>, secret_key: Binary<'a>) -> NifResult<Binary<'a>> {
     let sig = dilithium::sign(&message, &secret_key)
         .map_err(|e| rustler::Error::Term(Box::new(e)))?;
 
@@ -59,17 +60,46 @@ fn ml_dsa65_sign(env: Env, message: Binary, secret_key: Binary) -> NifResult<Bin
 /// Never returns an error — invalid inputs yield `false`.
 /// Inputs are zero-copy refs into the BEAM heap (Binary<'_> vs Vec<u8>).
 #[rustler::nif(name = "ml_dsa65_verify", schedule = "DirtyCpu")]
-fn ml_dsa65_verify(_env: Env, message: Binary, signature: Binary, public_key: Binary) -> NifResult<bool> {
+#[allow(unused_variables)] // `env` must be named exactly `env` — rustler_codegen 0.38
+                           // re-splices the parameter list by name when calling this
+                           // function from the generated NIF wrapper, so `_env` (the
+                           // usual "unused" convention) does not resolve.
+fn ml_dsa65_verify(env: Env, message: Binary, signature: Binary, public_key: Binary) -> NifResult<bool> {
     Ok(dilithium::verify(&message, &signature, &public_key))
 }
 
-// ── NIF registration ─────────────────────────────────────────────────────────
+// ── Ethereum ECDSA (secp256k1) signature recovery ────────────────────────────
+//
+// Recovers the wallet address that produced an EIP-191 `personal_sign` signature
+// (viem's `walletClient.signMessage`). Used by TheraGraphWeb.SessionAuth to verify
+// message-session registration signatures instead of the old regex-only check.
+// secp256k1 recovery runs in tens of microseconds — DirtyCpu is used here purely
+// for consistency with the other crypto NIFs above, not because it's required.
 
-rustler::init!(
-    "Elixir.TheraGraph.QuantumNif",
-    [
-        ml_dsa65_keygen,
-        ml_dsa65_sign,
-        ml_dsa65_verify,
-    ]
-);
+/// Recover the Ethereum address that signed `message` (raw, unprefixed) with the
+/// given EIP-191 signature.
+///
+/// `signature_hex` is a `0x`-prefixed 130-hex-char string: the raw 65 bytes
+/// `r (32) || s (32) || v (1)`, exactly what `walletClient.signMessage` returns.
+///
+/// On success, returns the recovered address as a lowercase `0x…` string directly
+/// (not wrapped). On failure (malformed hex, wrong length, bad signature), returns
+/// `rustler::Error::Term`, which Rustler encodes as `{:error, reason_string}`.
+#[rustler::nif(name = "eth_recover_signer", schedule = "DirtyCpu")]
+fn eth_recover_signer(message: String, signature_hex: String) -> NifResult<String> {
+    eth_signature::recover_eth_signer(&message, &signature_hex)
+        .map_err(|e| rustler::Error::Term(Box::new(e)))
+}
+
+// ── NIF registration ─────────────────────────────────────────────────────────
+//
+// rustler 0.38 no longer takes an explicit function list here — each
+// `#[rustler::nif]`-annotated function self-registers via `inventory::submit!`
+// at link time (see rustler_codegen::nif). `init!` takes only the target Elixir
+// module name (plus an optional `load = <fn>` for a custom on-load callback,
+// unused here). Passing a bracketed function list (the pre-0.3x API this call
+// was written against) fails to parse under 0.38 with "expected assignment
+// expression (i.e. `load = load`)" — fixed here as part of adding
+// `eth_recover_signer`, since both live in the same `rustler::init!` call.
+
+rustler::init!("Elixir.TheraGraph.QuantumNif");

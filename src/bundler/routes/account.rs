@@ -6,7 +6,6 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
-use alloy::{primitives::Address, providers::Provider};
 use serde_json::{json, Value};
 use subtle::ConstantTimeEq as _;
 use tracing::info;
@@ -18,24 +17,14 @@ pub async fn get_account(
     State(state): State<BundlerState>,
     Path(owner_str): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    let owner: Address = match owner_str.parse() {
+    let owner = match super::parse_owner(&owner_str) {
         Ok(a) => a,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "Invalid owner address" })),
-            )
-        }
+        Err(r) => return r,
     };
 
     match state.bundler.get_smart_account_address(owner).await {
         Ok(smart_account) => {
-            let deployed = state
-                .bundler
-                .is_deployed(smart_account)
-                .await
-                .unwrap_or(false);
-
+            let deployed = state.bundler.is_deployed(smart_account).await.unwrap_or(false);
             (
                 StatusCode::OK,
                 Json(json!({
@@ -45,10 +34,7 @@ pub async fn get_account(
                 })),
             )
         }
-        Err(_e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "Failed to look up smart account" })),
-        ),
+        Err(_) => super::internal_error("Failed to look up smart account"),
     }
 }
 
@@ -70,43 +56,22 @@ pub async fn fund_upgrade(
                 return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Unauthorized" })));
             }
         }
-        Err(_) => {
-            // Not configured — endpoint disabled
-            return (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" })));
-        }
+        Err(_) => return (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))),
     }
 
-    let owner: Address = match owner_str.parse() {
+    let owner = match super::parse_owner(&owner_str) {
         Ok(a) => a,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "Invalid owner address" })),
-            )
-        }
+        Err(r) => return r,
     };
 
     let new_impl = match state.config.account_impl_v2 {
         Some(addr) => addr,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "funded": false,
-                    "message": "ACCOUNT_IMPL_V2 not configured"
-                })),
-            )
-        }
+        None => return super::bad_request("ACCOUNT_IMPL_V2 not configured"),
     };
 
     let smart_account = match state.bundler.get_smart_account_address(owner).await {
-        Ok(a) => a,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
-            )
-        }
+        Ok(a)  => a,
+        Err(e) => return super::internal_error(e.to_string()),
     };
 
     let deployed = state.bundler.is_deployed(smart_account).await.unwrap_or(false);
@@ -123,14 +88,9 @@ pub async fn fund_upgrade(
 
     const UPGRADE_AMOUNT_WEI: u128 = 2_000_000_000_000_000;
 
-    let balance = match state.bundler.provider().get_balance(owner).await {
-        Ok(b) => b,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
-            )
-        }
+    let balance = match state.bundler.eth_balance(owner).await {
+        Ok(b)  => b,
+        Err(e) => return super::internal_error(e.to_string()),
     };
 
     if balance >= alloy::primitives::U256::from(UPGRADE_AMOUNT_WEI) {
@@ -162,9 +122,6 @@ pub async fn fund_upgrade(
                 })),
             )
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
-        ),
+        Err(e) => super::internal_error(e.to_string()),
     }
 }

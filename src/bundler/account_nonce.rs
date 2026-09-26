@@ -47,11 +47,11 @@ use std::{
 
 use alloy::primitives::{Address, U256};
 use dashmap::DashMap;
-use eyre::{Result, WrapErr};
+use eyre::Result;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use super::{contracts::IEntryPoint, service::HttpProvider};
+use super::chain_client::ChainClient;
 
 // ─── Tuning ───────────────────────────────────────────────────────────────────
 
@@ -96,8 +96,8 @@ impl UserOpNonceManager {
     /// even the first concurrent call pair for a sender is safe.
     pub async fn reserve(
         &self,
-        sender:   Address,
-        provider: &HttpProvider,
+        sender: Address,
+        client: &dyn ChainClient,
     ) -> Result<U256> {
         // Evict stale entries — try_lock skips any entry currently in use.
         let ttl = Duration::from_secs(RESERVATION_TTL_SECS);
@@ -136,7 +136,7 @@ impl UserOpNonceManager {
             // No reservation yet → fetch authoritative nonce from chain.
             // Per-sender lock prevents a second concurrent call for this sender
             // from fetching the same chain value before we record the reservation.
-            let chain_nonce = self.fetch_chain_nonce(sender, provider).await?;
+            let chain_nonce = self.fetch_chain_nonce(sender, client).await?;
             info!("UserOpNonceManager: {sender:#x} → nonce {chain_nonce} (from chain)");
             *guard = Some(Reservation { last_handed: chain_nonce, reserved_at: Instant::now() });
             chain_nonce
@@ -172,23 +172,9 @@ impl UserOpNonceManager {
 
     async fn fetch_chain_nonce(
         &self,
-        sender:   Address,
-        provider: &HttpProvider,
+        sender: Address,
+        client: &dyn ChainClient,
     ) -> Result<u64> {
-        use alloy::primitives::Uint;
-        type U192 = Uint<192, 3>;
-
-        let ep     = IEntryPoint::new(self.entry_point, provider.clone());
-        let result = ep
-            .getNonce(sender, U192::ZERO)
-            .call()
-            .await
-            .wrap_err("getNonce RPC failed")?;
-
-        // Low 64 bits of the uint256 = seq counter for key=0.
-        let seq: u64 = (result.nonce & U256::from(u64::MAX))
-            .try_into()
-            .wrap_err("nonce low-64-bits extraction failed — masked value > u64::MAX")?;
-        Ok(seq)
+        client.userop_nonce(self.entry_point, sender).await
     }
 }

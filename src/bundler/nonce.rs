@@ -21,15 +21,12 @@
 
 use std::sync::Arc;
 
-use alloy::{
-    primitives::Address,
-    providers::Provider,
-};
+use alloy::primitives::Address;
 use eyre::{Result, WrapErr};
 use tokio::sync::{Mutex, MutexGuard};
 use tracing::{info, warn};
 
-use super::service::HttpProvider;
+use super::chain_client::ChainClient;
 
 // ─── Internal state ───────────────────────────────────────────────────────────
 
@@ -45,16 +42,16 @@ pub(super) struct NonceState {
 /// Cheap to clone — internals are behind `Arc`.
 #[derive(Clone)]
 pub struct NonceManager {
-    provider: Arc<HttpProvider>,
-    signer:   Address,
+    client: Arc<dyn ChainClient>,
+    signer: Address,
     /// The mutex guards the entire sign → broadcast window.
     pub(super) state: Arc<Mutex<NonceState>>,
 }
 
 impl NonceManager {
-    pub fn new(provider: Arc<HttpProvider>, signer: Address) -> Self {
+    pub fn new(client: Arc<dyn ChainClient>, signer: Address) -> Self {
         Self {
-            provider,
+            client,
             signer,
             state: Arc::new(Mutex::new(NonceState { pending: None })),
         }
@@ -81,8 +78,8 @@ impl NonceManager {
         Ok(NonceGuard {
             nonce,
             guard,
-            provider:   self.provider.clone(),
-            signer:     self.signer,
+            client: self.client.clone(),
+            signer: self.signer,
         })
     }
 
@@ -96,8 +93,8 @@ impl NonceManager {
     }
 
     async fn fetch(&self) -> Result<u64> {
-        self.provider
-            .get_transaction_count(self.signer)
+        self.client
+            .tx_count(self.signer)
             .await
             .wrap_err("get_transaction_count failed")
     }
@@ -114,7 +111,7 @@ impl NonceManager {
 pub struct NonceGuard<'a> {
     pub nonce: u64,
     guard:     MutexGuard<'a, NonceState>,
-    provider:  Arc<HttpProvider>,
+    client:    Arc<dyn ChainClient>,
     signer:    Address,
 }
 
@@ -127,7 +124,7 @@ impl<'a> NonceGuard<'a> {
     /// Re-fetch the authoritative nonce after a nonce-related error.
     /// The updated value takes effect for the **next** reservation.
     pub async fn resync(&mut self) {
-        match self.provider.get_transaction_count(self.signer).await {
+        match self.client.tx_count(self.signer).await {
             Ok(n) => {
                 warn!("NonceManager: re-synced (in guard) to {n}");
                 self.guard.pending = Some(n);

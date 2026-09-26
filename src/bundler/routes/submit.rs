@@ -31,29 +31,20 @@ pub async fn handler(
     let raw = body.user_op;
 
     if raw.signature.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "UserOp must have a signature" })),
-        );
+        return super::bad_request("UserOp must have a signature");
     }
 
     // Per-field size caps — prevent oversized UserOps from consuming bundler resources.
-    const MAX_INIT_CODE: usize = 131_072;       // 128 KiB
-    const MAX_CALL_DATA: usize = 131_072;       // 128 KiB
-    const MAX_SIGNATURE: usize = 4_096;         // 4 KiB
+    const MAX_INIT_CODE: usize        = 131_072; // 128 KiB
+    const MAX_CALL_DATA: usize        = 131_072; // 128 KiB
+    const MAX_SIGNATURE: usize        = 4_096;   // 4 KiB
     const MAX_PAYMASTER_AND_DATA: usize = 4_096;
 
-    if raw.init_code.len() > MAX_INIT_CODE {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "initCode exceeds 128 KiB" })));
-    }
-    if raw.call_data.len() > MAX_CALL_DATA {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "callData exceeds 128 KiB" })));
-    }
-    if raw.signature.len() > MAX_SIGNATURE {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "signature exceeds 4 KiB" })));
-    }
+    if raw.init_code.len() > MAX_INIT_CODE          { return super::bad_request("initCode exceeds 128 KiB"); }
+    if raw.call_data.len() > MAX_CALL_DATA          { return super::bad_request("callData exceeds 128 KiB"); }
+    if raw.signature.len() > MAX_SIGNATURE          { return super::bad_request("signature exceeds 4 KiB"); }
     if raw.paymaster_and_data.len() > MAX_PAYMASTER_AND_DATA {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "paymasterAndData exceeds 4 KiB" })));
+        return super::bad_request("paymasterAndData exceeds 4 KiB");
     }
 
     let user_op: PackedUserOperation = raw.into();
@@ -82,10 +73,7 @@ pub async fn handler(
         }
         Err(e) => {
             error!("[submit] {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
-            )
+            super::internal_error(e.to_string())
         }
     }
 }
