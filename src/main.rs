@@ -247,6 +247,10 @@ async fn main() -> Result<()> {
     info!("🔁 Starting Nebula edge reconciler...");
     handles.push(spawn_nebula_reconciler(state.clone()));
 
+    // Spawn purchase-signal follower (Elixir `purchases` → recommendation signals)
+    info!("🛒 Starting purchase-signal follower...");
+    handles.push(spawn_purchase_signal_follower(state.clone()));
+
     // Spawn Nebula DLQ replayer (re-fires failed write edges every 15 minutes)
     info!("♻️  Starting Nebula DLQ replayer...");
     handles.push(spawn_nebula_dlq_replayer(state.clone()));
@@ -413,6 +417,46 @@ fn spawn_nebula_reconciler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> 
                         stats.comments_attempted, stats.total_failed
                     ),
                     Err(e) => error!("Nebula reconciliation failed: {e}"),
+                }
+            }
+        }).await;
+    })
+}
+
+/// Spawn the purchase-signal follower.
+///
+/// Tails Elixir `purchases` (v1 + TheraFriendz v2 fast lane) from its own
+/// cursor and records each sale as a Purchase recommendation signal — the
+/// chain-log purchase handlers never produced one (see
+/// `event_processor::purchase_signals`). Idempotent; every
+/// PURCHASE_SIGNALS_POLL_SECS (default 30). First run starts
+/// PURCHASE_SIGNALS_BACKFILL_HOURS back (default 48).
+/// PURCHASE_SIGNALS_ENABLED=false turns it off.
+fn spawn_purchase_signal_follower(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
+    let shutdown_rx = state.shutdown.subscribe();
+    let env_u64 = |k: &str, d: u64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let enabled = std::env::var("PURCHASE_SIGNALS_ENABLED").map(|v| v != "false").unwrap_or(true);
+    let poll_secs = env_u64("PURCHASE_SIGNALS_POLL_SECS", 30).max(1);
+    let backfill_hours = env_u64("PURCHASE_SIGNALS_BACKFILL_HOURS", 48);
+    tokio::spawn(async move {
+        if !enabled {
+            info!("purchase-signal follower disabled (PURCHASE_SIGNALS_ENABLED=false)");
+            return;
+        }
+        let mut interval = tokio::time::interval(Duration::from_secs(poll_secs));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        run_periodic("Purchase signals", shutdown_rx, interval, || {
+            let rec_pool    = state.db.pool().clone();
+            let elixir_pool = state.elixir_db.pool().clone();
+            let cache       = state.rec_cache.clone();
+            async move {
+                match event_processor::purchase_signals::poll_once(&rec_pool, &elixir_pool, cache.as_ref(), backfill_hours).await {
+                    Ok(s) if s.fetched > 0 => info!(
+                        "🛒 purchase signals: fetched={} recorded={} failed={}",
+                        s.fetched, s.recorded, s.failed
+                    ),
+                    Ok(_) => {}
+                    Err(e) => error!("purchase signals poll failed: {e}"),
                 }
             }
         }).await;

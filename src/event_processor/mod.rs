@@ -16,6 +16,7 @@ pub mod direct;
 pub(crate) mod elixir_db;
 pub mod graph_sync;
 mod interaction;
+pub mod purchase_signals;
 pub mod reconciliation;
 
 pub use direct::DirectHandlers;
