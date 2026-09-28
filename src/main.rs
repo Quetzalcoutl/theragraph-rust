@@ -26,7 +26,6 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 mod address;
 mod api;
 mod boards;
-mod bundler;
 mod config;
 mod crypto;
 mod database;
@@ -259,16 +258,9 @@ async fn main() -> Result<()> {
     info!("🎯 Starting real-time event processor...");
     handles.push(event_processor::spawn_event_processor(state.clone()));
 
-    // Initialize ERC-4337 bundler (optional — disabled if PRIVATE_KEY is not set)
-    info!("🌿 Initializing ERC-4337 bundler...");
-    let bundler_router = bundler::init().await;
-    if bundler_router.is_some() {
-        info!("✅ ERC-4337 Bundler ready (routes under /bundler/*)");
-    }
-
     // Spawn API server
     info!("🌐 Starting API server on port {}...", config.api.port);
-    handles.push(spawn_api_server(state.clone(), bundler_router));
+    handles.push(spawn_api_server(state.clone()));
 
     info!("═══════════════════════════════════════════════════════════════");
     info!("  ✅ All services started successfully");
@@ -637,17 +629,14 @@ async fn ensure_recommendation_tables(pool: &sqlx::PgPool) {
 }
 
 /// Spawn the API server
-fn spawn_api_server(
-    state: Arc<AppState>,
-    bundler_router: Option<axum::Router>,
-) -> tokio::task::JoinHandle<()> {
+fn spawn_api_server(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     let api_config   = state.config.api.clone();
     let pool         = state.elixir_db.pool().clone();
     let rec_cache    = state.rec_cache.clone();
     let graph_client = Arc::clone(&state.graph_client);
     let task_tracker = Arc::clone(&state.task_tracker);
     tokio::spawn(async move {
-        if let Err(e) = api::start_server(pool, api_config, bundler_router, rec_cache, Some(graph_client), task_tracker).await {
+        if let Err(e) = api::start_server(pool, api_config, rec_cache, Some(graph_client), task_tracker).await {
             error!("API server error: {:?}", e);
         }
     })

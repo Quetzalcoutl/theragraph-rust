@@ -368,7 +368,6 @@ async fn shutdown_signal() {
 pub async fn start_server(
     pool: PgPool,
     api_config: ApiConfig,
-    bundler_router: Option<Router>,
     rec_cache: Option<RecCache>,
     graph_client: Option<Arc<dyn GraphTraversal>>,
     task_tracker: Arc<tokio_util::task::TaskTracker>,
@@ -506,12 +505,6 @@ pub async fn start_server(
         .layer(cors)
         .layer(middleware::from_fn(with_request_id))
         .with_state(state);
-
-    let app = if let Some(br) = bundler_router {
-        app.nest("/bundler", br)
-    } else {
-        app
-    };
 
     let addr = format!("0.0.0.0:{}", port);
     info!("Starting recommendation API server on {}", addr);

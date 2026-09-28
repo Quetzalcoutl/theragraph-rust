@@ -22,7 +22,7 @@ tokio = { version = "1", features = ["full", "tracing"] }
 # RS-03: TaskTracker lives in tokio_util::task (part of the rt feature).
 tokio-util = { version = "0.7", features = ["rt"] }
 
-# Ethereum stack — alloy only (see bundler section below; ethers removed 2026-09-02)
+# Ethereum stack — alloy only (see alloy section below; ethers removed 2026-09-02)
 
 # Kafka - with SSL/SASL for secure connections
 rdkafka = { version = "0.39", features = ["cmake-build", "ssl", "sasl"] }
@@ -81,23 +81,19 @@ metrics-exporter-prometheus = { version = "0.18", features = ["http-listener"] }
 futures = "0.3"
 log = "0.4.29"
 
-# ── ERC-4337 Bundler (Alloy + Axum + Tokio) ──────────────────────────────────
-# Ethereum stack for bundler (Alloy — Foundry ecosystem, best-in-class Rust Ethereum)
+# ── Ethereum stack (Alloy) — signature recovery + chain reads. The ERC-4337
+# bundler lives only in thera-bundler-rust (embedded copy deleted 2026-09-28).
 alloy = { version = "2.4", features = [
     "full", "provider-http", "signer-local", "sol-types",
     "contract", "network", "rpc-types", "consensus", "eips",
 ] }
 
-# Bundler receipt store — Redis for production, DashMap fallback
+# Redis — recommendation pre-warm + caches
 redis = { version = "1.6", features = ["tokio-comp", "connection-manager", "aio"] }
-dashmap = "6"
 
 # RS-04: moka replaces the LruCache + outer AsyncMutex compute_locks bottleneck.
 # Sharded concurrent map with get_with() atomic get-or-insert — no outer lock needed.
 moka = { version = "0.12", features = ["future"] }
-
-# Error handling for bundler module (eyre — zero-cost, ergonomic)
-eyre = "0.6"
 
 # Byte utilities
 bytes = "1"

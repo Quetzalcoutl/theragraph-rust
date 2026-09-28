@@ -8,7 +8,6 @@ pub mod kafka;
 pub mod config;
 pub mod database;
 pub mod error;
-pub mod bundler;
 pub mod crypto;
 #[cfg(feature = "nif")]
 pub mod nif;
