@@ -103,13 +103,13 @@ impl EventDispatcher {
             "TokensRecovered"            => self.log_tokens_recovered(event),
 
             // ── Legacy aliases ─────────────────────────────────────────────
-            "SnapMinted" | "ArtMinted" | "MusicMinted" | "FlixMinted"
+            "SnapMinted" | "ArtMinted" | "MusicMinted" | "VidMinted"
                 => self.handle_legacy_mint(event).await,
-            "SnapLiked" | "ArtLiked" | "MusicLiked" | "FlixLiked"
+            "SnapLiked" | "ArtLiked" | "MusicLiked" | "VidLiked"
                 => self.handle_legacy_like(event).await,
-            "SnapCommented" | "ArtCommented" | "MusicCommented" | "FlixCommented"
+            "SnapCommented" | "ArtCommented" | "MusicCommented" | "VidCommented"
                 => self.handle_legacy_comment(event).await,
-            "SnapBoughtAndMinted" | "ArtBoughtAndMinted" | "MusicBoughtAndMinted" | "FlixBoughtAndMinted"
+            "SnapBoughtAndMinted" | "ArtBoughtAndMinted" | "MusicBoughtAndMinted" | "VidBoughtAndMinted"
                 => self.handle_legacy_purchase(event).await,
 
             _ => {

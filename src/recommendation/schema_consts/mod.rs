@@ -28,8 +28,8 @@ pub const SPACE_THERAGRAPH: &str = "theragraph";
 /// Current schema: migrations 01-26 applied (purchases edge, schema_meta TAG,
 /// drop zombie indexes, bookmarked + shared edges, comments_on prune index,
 /// music_listen edge, style_preference + genre_preference edges for companion signals,
-/// flix_watch edge for video completion + rewatch signals,
-/// flix_watch_time_index + flix_watch_weight_index for FoF traversal performance,
+/// vid_watch edge for video completion + rewatch signals,
+/// vid_watch_time_index + vid_watch_weight_index for FoF traversal performance,
 /// likes.reaction_type + post.content_type narrowed from unconstrained `string`
 /// to `fixed_string(20)` — small closed vocabularies, matches the existing
 /// post_type_time_index(content_type(20), ...) prefix length,
@@ -43,7 +43,9 @@ pub const SPACE_THERAGRAPH: &str = "theragraph";
 /// drop/recreate needed since these are genuinely new property names (unlike
 /// migration 24's `reaction_type`/`content_type`, which hit NebulaGraph v3's
 /// permanent "can't re-add a dropped property name" wall).
-pub const NEBULA_SCHEMA_VERSION: u32 = 26;
+/// Migrations 27-29 (TheraFlix became TheraVid, 2026-10-23): the watch edge type is `vid_watch` (27), its indexes (28), and the old
+/// `flix_watch` edge and its indexes are dropped (29). Nebula cannot rename an edge type.
+pub const NEBULA_SCHEMA_VERSION: u32 = 29;
 
 /// Parse the `version` integer out of the ASCII table `nebula-console` prints
 /// for `FETCH PROP ON schema_meta ... YIELD properties(vertex).version`.
@@ -101,12 +103,12 @@ pub const EDGE_SHARED: &str = "shared";
 ///   event_id STRING, listened_at DATETIME, duration_seconds INT32,
 ///   pct_played FLOAT DEFAULT 0.0, weight FLOAT DEFAULT 1.0
 pub const EDGE_MUSIC_LISTEN: &str = "music_listen";
-/// Flix watch edge — distinct from view_event (feed scroll) so the graph can
-/// apply flix-specific half-life and FoF traversal using completion rate.
-/// Schema defined in migration 022 (CREATE EDGE IF NOT EXISTS flix_watch):
+/// Vid watch edge — distinct from view_event (feed scroll) so the graph can
+/// apply vid-specific half-life and FoF traversal using completion rate.
+/// Schema defined in migration 022 (CREATE EDGE IF NOT EXISTS vid_watch):
 ///   event_id STRING, watched_at DATETIME, duration_seconds INT32,
 ///   pct_played FLOAT DEFAULT 0.0, rewatch_count INT32, weight FLOAT DEFAULT 1.0
-pub const EDGE_FLIX_WATCH: &str = "flix_watch";
+pub const EDGE_VID_WATCH: &str = "vid_watch";
 pub const PROP_WATCHED_AT: &str = "watched_at";
 pub const PROP_REWATCH_COUNT: &str = "rewatch_count";
 // ── Property names ────────────────────────────────────────────────────────────

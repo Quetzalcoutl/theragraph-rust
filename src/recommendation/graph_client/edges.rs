@@ -14,7 +14,7 @@ use crate::recommendation::schema_consts::{
     SPACE_THERAGRAPH,
     EDGE_FOLLOWS, EDGE_LIKES, EDGE_PURCHASES, EDGE_VIEW_EVENT, EDGE_CREATOR_AFFINITY,
     EDGE_COMMENTS_ON, EDGE_BOOKMARKED, EDGE_MUSIC_LISTEN,
-    EDGE_FLIX_WATCH, EDGE_STYLE_PREFERENCE, EDGE_GENRE_PREFERENCE,
+    EDGE_VID_WATCH, EDGE_STYLE_PREFERENCE, EDGE_GENRE_PREFERENCE,
     PROP_DURATION_SECONDS, PROP_WEIGHT,
     PROP_EVENT_ID,
     PROP_EVENT_TIME, PROP_TOTAL_VIEWS,
@@ -261,7 +261,7 @@ impl<T: GraphTransport> GraphClient<T> {
         self.mark_vertices_seen(lsn_vid, pid_vid);
     }
 
-    pub async fn write_flix_watch_edge(
+    pub async fn write_vid_watch_edge(
         &self,
         viewer: &str,
         post_id: &str,
@@ -272,7 +272,7 @@ impl<T: GraphTransport> GraphClient<T> {
         let viewer  = normalize_address(viewer);
         let post_id = post_id.trim();
         if !is_safe_address(&viewer) || !is_safe_id(post_id) {
-            warn!("write_flix_watch_edge: invalid input — viewer={viewer} post={post_id}");
+            warn!("write_vid_watch_edge: invalid input — viewer={viewer} post={post_id}");
             return;
         }
         let dur = duration_seconds.min(7200);
@@ -287,7 +287,7 @@ impl<T: GraphTransport> GraphClient<T> {
             upsert_p = if p_seen { String::new() } else { ensure_post_vertex_nql(&p_vid, post_id) },
             v_vid    = v_vid,
             p_vid    = p_vid,
-            e_fw     = EDGE_FLIX_WATCH,
+            e_fw     = EDGE_VID_WATCH,
             eid      = event_id,
             dur      = dur,
             pct      = pct,
@@ -298,7 +298,7 @@ impl<T: GraphTransport> GraphClient<T> {
             p_rwc    = PROP_REWATCH_COUNT,
             p_weight = PROP_WEIGHT,
         );
-        self.execute_write_or_dlq("flix_watch_edge", &viewer, post_id, &query).await;
+        self.execute_write_or_dlq("vid_watch_edge", &viewer, post_id, &query).await;
         self.mark_vertices_seen(v_vid, p_vid);
     }
 

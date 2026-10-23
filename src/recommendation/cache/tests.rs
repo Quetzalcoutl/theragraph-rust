@@ -171,7 +171,7 @@ use super::*;
             CacheKey::fof_bucket(FofBucket::ViewEvent, addr),
             CacheKey::fof_bucket(FofBucket::Comment, addr),
             CacheKey::fof_bucket(FofBucket::Purchase, addr),
-            CacheKey::fof_bucket(FofBucket::FlixWatch, addr),
+            CacheKey::fof_bucket(FofBucket::VidWatch, addr),
             CacheKey::user_suggestions(addr, addr),
         ];
 

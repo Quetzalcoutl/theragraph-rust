@@ -120,7 +120,7 @@ impl RecCache {
     // ── Companion style preferences ───────────────────────────────────────────
     //
     // Cached read of style_preference Nebula edges written by
-    // write_companion_preference_edges (AiFriendz chat → music/flix companion
+    // write_companion_preference_edges (AiFriendz chat → music/vid companion
     // signal). See graph_client::get_style_preferences for the traversal.
 
     pub async fn get_style_preferences(&self, user_address: &str) -> Option<HashMap<Box<str>, f32>> {

@@ -9,7 +9,7 @@ use crate::recommendation::schema_consts::{
     vid_user, vid_post,
     SPACE_THERAGRAPH,
     EDGE_FOLLOWS, EDGE_LIKES, EDGE_PURCHASES, EDGE_VIEW_EVENT, EDGE_CREATOR_AFFINITY,
-    EDGE_COMMENTS_ON, EDGE_BOOKMARKED, EDGE_SHARED, EDGE_RECOMMENDED_TO, EDGE_FLIX_WATCH,
+    EDGE_COMMENTS_ON, EDGE_BOOKMARKED, EDGE_SHARED, EDGE_RECOMMENDED_TO, EDGE_VID_WATCH,
     EDGE_STYLE_PREFERENCE, EDGE_GENRE_PREFERENCE,
     PROP_WEIGHT, PROP_LIKED_AT, PROP_REACTION_TYPE, PROP_DURATION_SECONDS, PROP_EVENT_TIME,
     PROP_COMMENTED_AT, PROP_PURCHASED_AT, PROP_SHARED_AT, PROP_BOOKMARKED_AT, PROP_WATCHED_AT,
@@ -532,28 +532,28 @@ GO 1 STEPS FROM "{addr_vid}" OVER {e_follows}
         }).await
     }
 
-    /// Flix-watch FoF. Score = friend_count × 2.0 × exp(-age/14d).
+    /// Vid-watch FoF. Score = friend_count × 2.0 × exp(-age/14d).
     ///
     /// 14-day half-life: video completion is deliberate intent — decays slower than
     /// a like (7d) but faster than a purchase (30d). 2.0× multiplier: a friend
-    /// who watched a flix is a stronger signal than a view_event (1.0×) because
-    /// `flix_watch` only fires on intentional playback, not feed scroll-past.
+    /// who watched a vid is a stronger signal than a view_event (1.0×) because
+    /// `vid_watch` only fires on intentional playback, not feed scroll-past.
     /// pct_played + rewatch_count (stored on the edge) are not yet folded into the
     /// FoF score here — they weight the edge in future traversal passes.
-    pub async fn get_flix_watch_fof_recommendations(&self, user_address: &str) -> Result<Vec<(String, f64)>> {
+    pub async fn get_vid_watch_fof_recommendations(&self, user_address: &str) -> Result<Vec<(String, f64)>> {
         self.fof_traverse_simple(user_address, FofSimpleConfig {
-            fn_name:   "get_flix_watch_fof_recommendations",
-            edge_type: EDGE_FLIX_WATCH,
+            fn_name:   "get_vid_watch_fof_recommendations",
+            edge_type: EDGE_VID_WATCH,
             ts_prop:   PROP_WATCHED_AT,
             ts_alias:  "watched_at",
             half_life: 14.0,
             score:     FofSimpleScore::Weighted(2.0),
-            bucket:    FofBucket::FlixWatch,
+            bucket:    FofBucket::VidWatch,
         }).await
     }
 
     /// Read style_preference edges written by `write_companion_preference_edges`
-    /// (AiFriendz chat → music/flix companion signal). Returns tag (with the
+    /// (AiFriendz chat → music/vid companion signal). Returns tag (with the
     /// `style:` VID prefix stripped) → confidence (0.0–1.0), highest confidence
     /// first, capped at 50.
     ///

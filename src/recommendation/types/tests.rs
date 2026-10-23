@@ -8,7 +8,7 @@ use super::*;
             ("snap",  ContentType::Snap),
             ("art",   ContentType::Art),
             ("music", ContentType::Music),
-            ("flix",  ContentType::Flix),
+            ("vid",  ContentType::Vid),
         ] {
             let parsed = ContentType::from_str(input)
                 .unwrap_or_else(|| panic!("from_str({input:?}) returned None"));
@@ -22,7 +22,7 @@ use super::*;
         assert_eq!(ContentType::from_str("SNAP"),  Some(ContentType::Snap));
         assert_eq!(ContentType::from_str("Art"),   Some(ContentType::Art));
         assert_eq!(ContentType::from_str("MUSIC"), Some(ContentType::Music));
-        assert_eq!(ContentType::from_str("FLiX"),  Some(ContentType::Flix));
+        assert_eq!(ContentType::from_str("VId"),  Some(ContentType::Vid));
     }
 
     #[test]
@@ -37,7 +37,7 @@ use super::*;
         assert_eq!(ContentType::Snap.as_str(),  "snap");
         assert_eq!(ContentType::Art.as_str(),   "art");
         assert_eq!(ContentType::Music.as_str(), "music");
-        assert_eq!(ContentType::Flix.as_str(),  "flix");
+        assert_eq!(ContentType::Vid.as_str(),  "vid");
     }
 
     /// Every value produced by `as_str` must be parseable back to the same variant.
@@ -48,7 +48,7 @@ use super::*;
             ContentType::Snap,
             ContentType::Art,
             ContentType::Music,
-            ContentType::Flix,
+            ContentType::Vid,
         ];
         for variant in &variants {
             let s = variant.as_str();
@@ -63,7 +63,7 @@ use super::*;
 
     #[test]
     fn content_type_serde_roundtrip() {
-        for variant in &[ContentType::Snap, ContentType::Art, ContentType::Music, ContentType::Flix] {
+        for variant in &[ContentType::Snap, ContentType::Art, ContentType::Music, ContentType::Vid] {
             let json = serde_json::to_string(variant).expect("serialize");
             let back: ContentType = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(&back, variant, "serde roundtrip failed for {variant:?}");

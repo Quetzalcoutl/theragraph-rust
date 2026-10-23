@@ -60,12 +60,12 @@ pub static EVENT_SIGNATURES: Lazy<HashMap<B256, EventType>> = Lazy::new(|| {
     m.insert(keccak256_signature("MusicBoughtAndMinted(uint256,address,address,uint256,uint256)"), EventType::MusicBoughtAndMinted);
     m.insert(keccak256_signature("MusicDeleted(uint256,address)"), EventType::MusicDeleted);
 
-    // === TheraFlix Events ===
-    m.insert(keccak256_signature("FlixMinted(uint256,string,address)"), EventType::FlixMinted);
-    m.insert(keccak256_signature("FlixLiked(uint256,address,uint256)"), EventType::FlixLiked);
-    m.insert(keccak256_signature("FlixCommented(uint256,uint256,address,string)"), EventType::FlixCommented);
-    m.insert(keccak256_signature("FlixBoughtAndMinted(uint256,address,address,uint256,uint256)"), EventType::FlixBoughtAndMinted);
-    m.insert(keccak256_signature("FlixDeleted(uint256,address)"), EventType::FlixDeleted);
+    // === TheraVid Events ===
+    m.insert(keccak256_signature("FlixMinted(uint256,string,address)"), EventType::VidMinted);
+    m.insert(keccak256_signature("FlixLiked(uint256,address,uint256)"), EventType::VidLiked);
+    m.insert(keccak256_signature("FlixCommented(uint256,uint256,address,string)"), EventType::VidCommented);
+    m.insert(keccak256_signature("FlixBoughtAndMinted(uint256,address,address,uint256,uint256)"), EventType::VidBoughtAndMinted);
+    m.insert(keccak256_signature("FlixDeleted(uint256,address)"), EventType::VidDeleted);
 
     // === TheraFriendz Events ===
     m.insert(keccak256_signature("Followed(address,address,string,string,uint256)"), EventType::Followed);
@@ -162,7 +162,7 @@ pub fn parse_log(log: &Log, fallback_contract_type: &str) -> Result<ParsedEvent>
         if let Some(ctv) = ct {
             contract_type = match ctv {
                 0 => "art".to_string(),
-                1 => "flix".to_string(),
+                1 => "vid".to_string(),
                 2 => "music".to_string(),
                 3 => "snap".to_string(),
                 unknown => {

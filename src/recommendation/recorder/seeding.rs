@@ -60,9 +60,9 @@ pub async fn seed_from_presets(
         let contract_types: Vec<&str> = presets.iter().flat_map(|p| match p.as_str() {
             "art_lover"    => vec!["art"],
             "music_fan"    => vec!["music"],
-            "movie_buff"   => vec!["flix"],
+            "movie_buff"   => vec!["vid"],
             "snap_creator" => vec!["snap"],
-            "collector"    => vec!["art", "snap", "flix", "music"],
+            "collector"    => vec!["art", "snap", "vid", "music"],
             _              => vec![],
         }).collect();
 

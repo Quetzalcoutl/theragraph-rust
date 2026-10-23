@@ -29,10 +29,10 @@ const FOF_PURCHASE_WEIGHT: f32 = 0.15;
 const FOF_SHARE_WEIGHT:    f32 = 0.12;
 /// Bookmark FoF boost weight (follows → bookmarked content, 10-day half-life).
 const FOF_BOOKMARK_WEIGHT: f32 = 0.08;
-/// Flix-watch FoF boost weight (follows → flix watched, 14-day half-life).
+/// Vid-watch FoF boost weight (follows → vid watched, 14-day half-life).
 /// Stronger than view_event (passive scroll) and bookmark; equal to purchase
 /// in social signal quality — deliberate completion signals peer taste.
-const FOF_FLIX_WEIGHT:     f32 = 0.08;
+const FOF_VID_WEIGHT:     f32 = 0.08;
 
 /// Companion (AiFriendz chat) style-preference boost weight.
 /// A style mentioned in passing conversation is a real but weaker signal than
@@ -70,21 +70,21 @@ fn accumulate_fof(map: &mut HashMap<Box<str>, f32>, scores: Option<Box<[(Box<str
 /// topic-affinity boosts from board-dwell signals written by Elixir.
 ///
 /// ByteGraph signal hierarchy (highest to lowest weight):
-///   purchase (0.15) → share (0.12) → follow-like (0.10) → flix-watch/bookmark (0.08) → comment/view (0.05)
+///   purchase (0.15) → share (0.12) → follow-like (0.10) → vid-watch/bookmark (0.08) → comment/view (0.05)
 pub(crate) async fn apply_cache_boosts(
     scored: &mut Vec<ScoredNft>,
     cache: &RecCache,
     user_address: &str,
     graph: Option<&Arc<dyn GraphTraversal>>,
 ) {
-    let (fof_opt, view_opt, comment_opt, purchase_opt, share_opt, bookmark_opt, flix_opt) = tokio::join!(
+    let (fof_opt, view_opt, comment_opt, purchase_opt, share_opt, bookmark_opt, vid_opt) = tokio::join!(
         cache.get_fof_recs(FofBucket::FollowLike, user_address),
         cache.get_fof_recs(FofBucket::ViewEvent,  user_address),
         cache.get_fof_recs(FofBucket::Comment,    user_address),
         cache.get_fof_recs(FofBucket::Purchase,   user_address),
         cache.get_fof_recs(FofBucket::Share,      user_address),
         cache.get_fof_recs(FofBucket::Bookmark,   user_address),
-        cache.get_fof_recs(FofBucket::FlixWatch,  user_address),
+        cache.get_fof_recs(FofBucket::VidWatch,  user_address),
     );
 
     let mut boost_map: HashMap<Box<str>, f32> = HashMap::new();
@@ -94,7 +94,7 @@ pub(crate) async fn apply_cache_boosts(
     accumulate_fof(&mut boost_map, purchase_opt, FOF_PURCHASE_WEIGHT);
     accumulate_fof(&mut boost_map, share_opt,    FOF_SHARE_WEIGHT);
     accumulate_fof(&mut boost_map, bookmark_opt, FOF_BOOKMARK_WEIGHT);
-    accumulate_fof(&mut boost_map, flix_opt,     FOF_FLIX_WEIGHT);
+    accumulate_fof(&mut boost_map, vid_opt,     FOF_VID_WEIGHT);
 
     if !boost_map.is_empty() {
         let mut fof_changed = false;

@@ -577,7 +577,7 @@ fn test_is_notification_event_positive() {
     assert!(EventType::SnapLiked.is_notification_event(), "SnapLiked");
     assert!(EventType::ArtLiked.is_notification_event(), "ArtLiked");
     assert!(EventType::MusicLiked.is_notification_event(), "MusicLiked");
-    assert!(EventType::FlixLiked.is_notification_event(), "FlixLiked");
+    assert!(EventType::VidLiked.is_notification_event(), "VidLiked");
 }
 
 #[test]
@@ -665,7 +665,7 @@ fn is_purchase_positive() {
     assert!(EventType::SnapBoughtAndMinted.is_purchase(), "SnapBoughtAndMinted");
     assert!(EventType::ArtBoughtAndMinted.is_purchase(), "ArtBoughtAndMinted");
     assert!(EventType::MusicBoughtAndMinted.is_purchase(), "MusicBoughtAndMinted");
-    assert!(EventType::FlixBoughtAndMinted.is_purchase(), "FlixBoughtAndMinted");
+    assert!(EventType::VidBoughtAndMinted.is_purchase(), "VidBoughtAndMinted");
     assert!(EventType::PurchaseProcessed.is_purchase(), "PurchaseProcessed");
     assert!(EventType::ContentCopyMinted.is_purchase(), "ContentCopyMinted");
 }
@@ -694,11 +694,11 @@ fn contract_type_all_media_types() {
     assert_eq!(EventType::MusicCommented.contract_type(), "music");
     assert_eq!(EventType::MusicBoughtAndMinted.contract_type(), "music");
     assert_eq!(EventType::MusicDeleted.contract_type(), "music");
-    assert_eq!(EventType::FlixMinted.contract_type(), "flix");
-    assert_eq!(EventType::FlixLiked.contract_type(), "flix");
-    assert_eq!(EventType::FlixCommented.contract_type(), "flix");
-    assert_eq!(EventType::FlixBoughtAndMinted.contract_type(), "flix");
-    assert_eq!(EventType::FlixDeleted.contract_type(), "flix");
+    assert_eq!(EventType::VidMinted.contract_type(), "vid");
+    assert_eq!(EventType::VidLiked.contract_type(), "vid");
+    assert_eq!(EventType::VidCommented.contract_type(), "vid");
+    assert_eq!(EventType::VidBoughtAndMinted.contract_type(), "vid");
+    assert_eq!(EventType::VidDeleted.contract_type(), "vid");
 }
 
 #[test]
@@ -732,7 +732,7 @@ fn is_mint_positive_all_variants() {
     assert!(EventType::SnapMinted.is_mint());
     assert!(EventType::ArtMinted.is_mint());
     assert!(EventType::MusicMinted.is_mint());
-    assert!(EventType::FlixMinted.is_mint());
+    assert!(EventType::VidMinted.is_mint());
     assert!(EventType::ContentMinted.is_mint());
 }
 
@@ -751,7 +751,7 @@ fn is_like_positive_all_variants() {
     assert!(EventType::SnapLiked.is_like());
     assert!(EventType::ArtLiked.is_like());
     assert!(EventType::MusicLiked.is_like());
-    assert!(EventType::FlixLiked.is_like());
+    assert!(EventType::VidLiked.is_like());
 }
 
 #[test]
@@ -841,7 +841,7 @@ fn parse_content_minted_content_type_mapping() {
         "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     );
 
-    let cases: &[(u64, &str)] = &[(0, "art"), (1, "flix"), (2, "music"), (3, "snap")];
+    let cases: &[(u64, &str)] = &[(0, "art"), (1, "vid"), (2, "music"), (3, "snap")];
 
     for (ct_value, expected_type) in cases {
         let mut ct_bytes = [0u8; 32];

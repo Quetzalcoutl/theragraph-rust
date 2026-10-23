@@ -18,7 +18,7 @@ use super::*;
 
     #[test]
     fn valid_known_types_pass() {
-        for ct in &["snap", "art", "music", "flix"] {
+        for ct in &["snap", "art", "music", "vid"] {
             assert!(
                 validate_contract_type(Some(ct)).is_ok(),
                 "expected Ok for known type {ct:?}"
@@ -32,7 +32,7 @@ use super::*;
         // ContentType guard uses `.to_lowercase()`, so mixed-case strings
         // accepted by the guard will reach the DB with their original casing.
         // This test ensures the guard itself does not reject them.
-        for ct in &["SNAP", "Art", "MUSIC", "FLiX"] {
+        for ct in &["SNAP", "Art", "MUSIC", "VId"] {
             assert!(
                 validate_contract_type(Some(ct)).is_ok(),
                 "expected Ok for mixed-case type {ct:?}"
@@ -90,7 +90,7 @@ use super::*;
     #[test]
     fn close_misspelling_is_rejected() {
         // Guard against fuzzy-matching: "snapp", "artt", etc. must not slip through.
-        for bad in &["snapp", "artt", "musics", "flix2", "NFT", "image"] {
+        for bad in &["snapp", "artt", "musics", "vid2", "NFT", "image"] {
             assert!(
                 validate_contract_type(Some(bad)).is_err(),
                 "close misspelling {bad:?} must be rejected by the validation gate"

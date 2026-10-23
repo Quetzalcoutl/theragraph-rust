@@ -26,7 +26,7 @@
 --   bookmarked         — user → post
 --   shared             — user → post
 --   music_listen       — user → post, pct_played-weighted
---   flix_watch         — user → post, pct_played + rewatch_count weighted
+--   vid_watch         — user → post, pct_played + rewatch_count weighted
 --   style_preference   — user → style:{tag} vertex, AiFriendz companion chat signal
 --   genre_preference   — user → genre:{slug} vertex, declared listener taste
 --                         (write_genre_preference_edges, up to 30 slugs; also

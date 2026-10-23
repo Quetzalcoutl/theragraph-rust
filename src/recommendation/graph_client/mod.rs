@@ -47,10 +47,10 @@ pub trait GraphTraversal: Send + Sync {
     /// Bookmarks are a strong private save-for-later signal: 10-day half-life, 1.2× score weight.
     /// Unlike shares, bookmarks are private — they reflect genuine personal interest without social incentive.
     async fn get_bookmark_fof_recommendations(&self, user_address: &str) -> Vec<(String, f64)>;
-    /// Return ranked FoF candidates via the `flix_watch` edge.
+    /// Return ranked FoF candidates via the `vid_watch` edge.
     /// Video watch is a strong completion-quality signal: 14-day half-life, 2.0× score weight.
     /// Weighted above view_event (passive scroll) and below purchase (economic commitment).
-    async fn get_flix_watch_fof_recommendations(&self, user_address: &str) -> Vec<(String, f64)>;
+    async fn get_vid_watch_fof_recommendations(&self, user_address: &str) -> Vec<(String, f64)>;
     /// Return this user's style_preference edges (companion chat signal) as
     /// tag → confidence. Pre-warmed into Redis by the same background update
     /// cycle as the FoF buckets; `apply_cache_boosts` reads the Redis cache
@@ -146,10 +146,10 @@ pub trait GraphTraversal: Send + Sync {
         duration_seconds: u32,
         pct_played: f32,
     );
-    /// Insert or update a `flix_watch` edge. Same UPSERT semantics as
+    /// Insert or update a `vid_watch` edge. Same UPSERT semantics as
     /// music_listen: one edge per (viewer, post) pair; duration accumulates,
     /// pct_played uses geometric mean, rewatch_count increments.
-    async fn write_flix_watch_edge(
+    async fn write_vid_watch_edge(
         &self,
         viewer: &str,
         post_id: &str,
@@ -318,7 +318,7 @@ impl GraphClient<DynGraphTransport> {
 /// `pub(crate)` so `cache.rs` can use a single `get_fof_recs(bucket, addr)` /
 /// `set_fof_recs(bucket, addr, recs)` pair instead of 12 named methods.
 #[derive(Copy, Clone)]
-pub(crate) enum FofBucket { FollowLike, ViewEvent, Comment, Purchase, Share, Bookmark, FlixWatch }
+pub(crate) enum FofBucket { FollowLike, ViewEvent, Comment, Purchase, Share, Bookmark, VidWatch }
 
 impl FofBucket {
     /// Redis key prefix for this bucket — single source of truth shared by
@@ -334,7 +334,7 @@ impl FofBucket {
             FofBucket::Purchase   => "rec:fof_purchase:v2:",
             FofBucket::Share      => "rec:fof_share:v2:",
             FofBucket::Bookmark   => "rec:fof_bookmark:v2:",
-            FofBucket::FlixWatch  => "rec:fof_flix:v2:",
+            FofBucket::VidWatch  => "rec:fof_vid:v2:",
         }
     }
 
@@ -348,7 +348,7 @@ impl FofBucket {
             FofBucket::Purchase,
             FofBucket::Share,
             FofBucket::Bookmark,
-            FofBucket::FlixWatch,
+            FofBucket::VidWatch,
         ]
     }
 }
@@ -584,8 +584,8 @@ impl<T: GraphTransport + 'static> GraphTraversal for GraphClient<T> {
     async fn get_bookmark_fof_recommendations(&self, user_address: &str) -> Vec<(String, f64)> {
         unwrap_fof(GraphClient::get_bookmark_fof_recommendations(self, user_address).await, "get_bookmark_fof")
     }
-    async fn get_flix_watch_fof_recommendations(&self, user_address: &str) -> Vec<(String, f64)> {
-        unwrap_fof(GraphClient::get_flix_watch_fof_recommendations(self, user_address).await, "get_flix_watch_fof")
+    async fn get_vid_watch_fof_recommendations(&self, user_address: &str) -> Vec<(String, f64)> {
+        unwrap_fof(GraphClient::get_vid_watch_fof_recommendations(self, user_address).await, "get_vid_watch_fof")
     }
 
     async fn get_style_preferences(&self, user_address: &str) -> HashMap<Box<str>, f32> {
@@ -657,8 +657,8 @@ impl<T: GraphTransport + 'static> GraphTraversal for GraphClient<T> {
         GraphClient::write_music_listen_edge(self, listener, post_id, event_id, duration_seconds, pct_played).await;
     }
 
-    async fn write_flix_watch_edge(&self, viewer: &str, post_id: &str, event_id: &str, duration_seconds: u32, pct_played: f32) {
-        GraphClient::write_flix_watch_edge(self, viewer, post_id, event_id, duration_seconds, pct_played).await;
+    async fn write_vid_watch_edge(&self, viewer: &str, post_id: &str, event_id: &str, duration_seconds: u32, pct_played: f32) {
+        GraphClient::write_vid_watch_edge(self, viewer, post_id, event_id, duration_seconds, pct_played).await;
     }
 
     async fn write_music_creator_affinity(&self, listener: &str, creator: &str, duration_seconds: u32, pct_played: f32) {

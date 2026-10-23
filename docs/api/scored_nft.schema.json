@@ -39,7 +39,7 @@
     },
     "contract_type": {
       "type": "string",
-      "enum": ["snap", "art", "music", "flix"],
+      "enum": ["snap", "art", "music", "vid"],
       "description": "Content category. Maps to the Postgres `contract_type` enum."
     },
     "creator_address": {

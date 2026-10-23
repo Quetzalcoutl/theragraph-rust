@@ -185,7 +185,7 @@ pub(super) fn parse_event_data(
         EventType::SnapMinted
         | EventType::ArtMinted
         | EventType::MusicMinted
-        | EventType::FlixMinted => {
+        | EventType::VidMinted => {
             // Minted(uint256 indexed tokenId, string uri, address creator)
             let token_id = indexed_params.first().cloned().unwrap_or_default();
             if data.len() >= 64 {
@@ -209,7 +209,7 @@ pub(super) fn parse_event_data(
         EventType::SnapLiked
         | EventType::ArtLiked
         | EventType::MusicLiked
-        | EventType::FlixLiked => {
+        | EventType::VidLiked => {
             // Liked(uint256 indexed tokenId, address liker, uint256 totalLikes)
             let token_id = indexed_params.first().cloned().unwrap_or_default();
             if data.len() >= 64 {
@@ -561,15 +561,15 @@ pub(super) fn parse_event_data(
         EventType::SnapCommented
         | EventType::ArtCommented
         | EventType::MusicCommented
-        | EventType::FlixCommented
+        | EventType::VidCommented
         | EventType::SnapBoughtAndMinted
         | EventType::ArtBoughtAndMinted
         | EventType::MusicBoughtAndMinted
-        | EventType::FlixBoughtAndMinted
+        | EventType::VidBoughtAndMinted
         | EventType::SnapDeleted
         | EventType::ArtDeleted
         | EventType::MusicDeleted
-        | EventType::FlixDeleted => {
+        | EventType::VidDeleted => {
             if data.is_empty() {
                 None
             } else {

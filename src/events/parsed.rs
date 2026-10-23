@@ -13,7 +13,7 @@ pub struct ParsedEvent {
     pub event_type: String,
     /// Contract address
     pub contract_address: String,
-    /// Contract type (snap, art, music, flix, friends)
+    /// Contract type (snap, art, music, vid, friends)
     pub contract_type: String,
     /// Block number
     pub block_number: u64,

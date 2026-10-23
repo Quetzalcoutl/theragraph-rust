@@ -17,7 +17,7 @@
 //!
 //! The enhanced feed uses a multi-factor scoring system:
 //! - Tag matching (30%): NFTs with tags user has engaged with
-//! - Content type affinity (15%): Preference for snap/art/music/flix
+//! - Content type affinity (15%): Preference for snap/art/music/vid
 //! - Creator affinity (15%): Creators user has engaged with before
 //! - Trending score (10%): Currently popular content
 //! - Engagement score (10%): Overall engagement level

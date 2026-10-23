@@ -36,7 +36,7 @@ pub async fn apply_preference_decay(pool: &PgPool, cache: Option<&RecCache>) -> 
             snap_affinity  = 0.5 + (snap_affinity  - 0.5) * $1,
             art_affinity   = 0.5 + (art_affinity   - 0.5) * $1,
             music_affinity = 0.5 + (music_affinity - 0.5) * $1,
-            flix_affinity  = 0.5 + (flix_affinity  - 0.5) * $1,
+            vid_affinity  = 0.5 + (vid_affinity  - 0.5) * $1,
             tag_preferences = COALESCE(
                 (SELECT jsonb_object_agg(
                             key,

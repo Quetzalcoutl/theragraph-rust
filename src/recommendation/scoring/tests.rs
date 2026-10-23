@@ -68,7 +68,7 @@ fn type_affinity_primary_content_gets_extra_boost() {
     prefs.art_affinity = 0.9;
     prefs.snap_affinity = 0.2;
     prefs.music_affinity = 0.2;
-    prefs.flix_affinity = 0.2;
+    prefs.vid_affinity = 0.2;
 
     let (art_score, _) = compute_type_affinity_score(&weights, "art", &prefs);
     // Non-primary type at the same raw affinity level for comparison
@@ -104,12 +104,12 @@ fn type_affinity_all_four_content_types_dispatch() {
     prefs.snap_affinity = 0.9;
     prefs.art_affinity = 0.7;
     prefs.music_affinity = 0.5;
-    prefs.flix_affinity = 0.3;
+    prefs.vid_affinity = 0.3;
 
     let (snap_score, _) = compute_type_affinity_score(&weights, "snap", &prefs);
     let (art_score, _) = compute_type_affinity_score(&weights, "art", &prefs);
     let (music_score, _) = compute_type_affinity_score(&weights, "music", &prefs);
-    let (flix_score, _) = compute_type_affinity_score(&weights, "flix", &prefs);
+    let (vid_score, _) = compute_type_affinity_score(&weights, "vid", &prefs);
 
     // Higher affinity → higher score (monotonicity over the four types)
     assert!(
@@ -120,11 +120,11 @@ fn type_affinity_all_four_content_types_dispatch() {
         art_score > music_score,
         "art(0.7) should outscore music(0.5): {art_score} vs {music_score}"
     );
-    // music is at 0.5, flix at 0.3; the low-end uses affinity * 0.8 so the
+    // music is at 0.5, vid at 0.3; the low-end uses affinity * 0.8 so the
     // ordering still holds
     assert!(
-        music_score > flix_score,
-        "music(0.5) should outscore flix(0.3): {music_score} vs {flix_score}"
+        music_score > vid_score,
+        "music(0.5) should outscore vid(0.3): {music_score} vs {vid_score}"
     );
 }
 
@@ -337,7 +337,7 @@ fn calculate_score_static_zero_input_returns_near_zero() {
     prefs.snap_affinity = 0.0;
     prefs.art_affinity = 0.0;
     prefs.music_affinity = 0.0;
-    prefs.flix_affinity = 0.0;
+    prefs.vid_affinity = 0.0;
 
     // No features at all
     let ctx = ScoringContext {
@@ -686,7 +686,7 @@ fn diversity_shuffle_returns_all_when_below_limit() {
 
 #[test]
 fn diversity_shuffle_truncates_to_limit() {
-    let types = ["snap", "art", "music", "flix"];
+    let types = ["snap", "art", "music", "vid"];
     let make_scored = |id: usize| ScoredNft {
         nft_id: id.to_string().into(),
         token_id: 1,

@@ -14,7 +14,7 @@
 
     #[test]
     fn classify_like_variants() {
-        for ev in &["SnapLiked", "ArtLiked", "MusicLiked", "FlixLiked"] {
+        for ev in &["SnapLiked", "ArtLiked", "MusicLiked", "VidLiked"] {
             assert_eq!(classify_event_type(ev), Some("like"), "failed for {ev}");
         }
     }
@@ -25,7 +25,7 @@
             "SnapUnliked",
             "ArtUnliked",
             "MusicUnliked",
-            "FlixUnliked",
+            "VidUnliked",
         ] {
             assert_eq!(classify_event_type(ev), Some("unlike"), "failed for {ev}");
         }
@@ -38,7 +38,7 @@
             "SnapBoughtAndMinted",
             "ArtBoughtAndMinted",
             "MusicBoughtAndMinted",
-            "FlixBoughtAndMinted",
+            "VidBoughtAndMinted",
         ] {
             assert_eq!(classify_event_type(ev), Some("purchase"), "failed for {ev}");
         }
@@ -50,7 +50,7 @@
             "SnapCommented",
             "ArtCommented",
             "MusicCommented",
-            "FlixCommented",
+            "VidCommented",
         ] {
             assert_eq!(classify_event_type(ev), Some("comment"), "failed for {ev}");
         }

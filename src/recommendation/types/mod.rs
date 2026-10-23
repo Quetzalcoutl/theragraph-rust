@@ -10,7 +10,7 @@ pub enum ContentType {
     Snap,
     Art,
     Music,
-    Flix,
+    Vid,
 }
 
 impl ContentType {
@@ -25,12 +25,12 @@ impl ContentType {
             b"snap"  => Some(Self::Snap),
             b"art"   => Some(Self::Art),
             b"music" => Some(Self::Music),
-            b"flix"  => Some(Self::Flix),
+            b"vid"  => Some(Self::Vid),
             _ => match s.to_lowercase().as_str() {
                 "snap"  => Some(Self::Snap),
                 "art"   => Some(Self::Art),
                 "music" => Some(Self::Music),
-                "flix"  => Some(Self::Flix),
+                "vid"  => Some(Self::Vid),
                 _       => None,
             }
         }
@@ -42,7 +42,7 @@ impl ContentType {
             Self::Snap  => "snap",
             Self::Art   => "art",
             Self::Music => "music",
-            Self::Flix  => "flix",
+            Self::Vid  => "vid",
         }
     }
 }

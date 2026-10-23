@@ -192,7 +192,7 @@ pub fn extract_features(
     }
 
     // Hashtags from content-specific metadata → bucket 0
-    for metadata_key in &["therasnap_metadata", "theraart_metadata", "theramusic_metadata", "theraflix_metadata"] {
+    for metadata_key in &["therasnap_metadata", "theraart_metadata", "theramusic_metadata", "theravid_metadata"] {
         if let Some(content_meta) = metadata.get(*metadata_key) {
             if let Some(content_hashtags) = content_meta.get("hashtags").and_then(|v| v.as_array()) {
                 for hashtag in content_hashtags.iter().take(3) {

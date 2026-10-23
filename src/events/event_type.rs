@@ -35,12 +35,12 @@ pub enum EventType {
     MusicBoughtAndMinted,
     MusicDeleted,
 
-    // Flix events
-    FlixMinted,
-    FlixLiked,
-    FlixCommented,
-    FlixBoughtAndMinted,
-    FlixDeleted,
+    // Vid events
+    VidMinted,
+    VidLiked,
+    VidCommented,
+    VidBoughtAndMinted,
+    VidDeleted,
 
     // Friends events
     Followed,
@@ -109,11 +109,11 @@ impl EventType {
             | EventType::MusicBoughtAndMinted
             | EventType::MusicDeleted => "music",
 
-            EventType::FlixMinted
-            | EventType::FlixLiked
-            | EventType::FlixCommented
-            | EventType::FlixBoughtAndMinted
-            | EventType::FlixDeleted => "flix",
+            EventType::VidMinted
+            | EventType::VidLiked
+            | EventType::VidCommented
+            | EventType::VidBoughtAndMinted
+            | EventType::VidDeleted => "vid",
 
             EventType::Followed
             | EventType::Unfollowed
@@ -158,7 +158,7 @@ impl EventType {
             EventType::SnapMinted
                 | EventType::ArtMinted
                 | EventType::MusicMinted
-                | EventType::FlixMinted
+                | EventType::VidMinted
                 | EventType::ContentMinted
         )
     }
@@ -170,7 +170,7 @@ impl EventType {
             EventType::SnapLiked
                 | EventType::ArtLiked
                 | EventType::MusicLiked
-                | EventType::FlixLiked
+                | EventType::VidLiked
         )
     }
 
@@ -181,7 +181,7 @@ impl EventType {
             EventType::SnapBoughtAndMinted
                 | EventType::ArtBoughtAndMinted
                 | EventType::MusicBoughtAndMinted
-                | EventType::FlixBoughtAndMinted
+                | EventType::VidBoughtAndMinted
                 | EventType::PurchaseProcessed
                 | EventType::ContentCopyMinted
         )
@@ -203,17 +203,17 @@ impl EventType {
                 | EventType::SnapLiked
                 | EventType::ArtLiked
                 | EventType::MusicLiked
-                | EventType::FlixLiked
+                | EventType::VidLiked
                 // Legacy per-contract comments
                 | EventType::SnapCommented
                 | EventType::ArtCommented
                 | EventType::MusicCommented
-                | EventType::FlixCommented
+                | EventType::VidCommented
                 // Legacy per-contract purchases (trigger copy_purchased notification)
                 | EventType::SnapBoughtAndMinted
                 | EventType::ArtBoughtAndMinted
                 | EventType::MusicBoughtAndMinted
-                | EventType::FlixBoughtAndMinted
+                | EventType::VidBoughtAndMinted
                 // Social follows
                 | EventType::Followed
         )

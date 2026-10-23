@@ -40,7 +40,7 @@ GET /api/v1/feed/enhanced/:user_address?limit=20&offset=0&type=snap
 ```
 
 Returns NFTs scored and ranked based on:
-- User's content type preferences (snap, art, music, flix)
+- User's content type preferences (snap, art, music, vid)
 - Tag matching from past interactions
 - Creator affinity from follows and engagements
 - Trending and engagement scores
@@ -74,7 +74,7 @@ The enhanced feed uses a multi-factor scoring system:
 | Factor | Weight | Description |
 |--------|--------|-------------|
 | Tag Match | 30% | NFTs with tags user has engaged with |
-| Content Type | 15% | User's preference for snap/art/music/flix |
+| Content Type | 15% | User's preference for snap/art/music/vid |
 | Creator Affinity | 15% | Creators user has engaged with before |
 | Trending | 10% | Currently popular content |
 | Engagement | 10% | Overall engagement level of NFT |
@@ -119,7 +119,7 @@ CREATE TABLE user_preferences (
     snap_affinity REAL DEFAULT 0.5,
     art_affinity REAL DEFAULT 0.5,
     music_affinity REAL DEFAULT 0.5,
-    flix_affinity REAL DEFAULT 0.5,
+    vid_affinity REAL DEFAULT 0.5,
     tag_preferences JSONB DEFAULT '{}',
     creator_preferences JSONB DEFAULT '{}',
     total_likes INTEGER DEFAULT 0,

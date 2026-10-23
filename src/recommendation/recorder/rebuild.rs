@@ -19,7 +19,7 @@
 //! (lowest-weight-wins) is order-dependent, so replaying out of order can
 //! evict different tags/creators than production history actually did.
 //!
-//! `pct_played` (added in migration 015) lets `Listen`/`FlixWatch` weight be
+//! `pct_played` (added in migration 015) lets `Listen`/`VidWatch` weight be
 //! reproduced exactly for interactions recorded after that migration; rows
 //! recorded before it have `pct_played = NULL` and fall back to full weight
 //! (`unwrap_or(1.0)`) like any other caller of `interaction_weight`.
@@ -251,9 +251,9 @@ mod tests {
     }
 
     #[test]
-    fn row_to_event_carries_pct_played_through_for_listen_flix_watch() {
-        let event = row_to_event("0xuser", row("flix_watch", vec![], Some(0.87)))
-            .expect("\"flix_watch\" should parse");
+    fn row_to_event_carries_pct_played_through_for_listen_vid_watch() {
+        let event = row_to_event("0xuser", row("vid_watch", vec![], Some(0.87)))
+            .expect("\"vid_watch\" should parse");
         assert_eq!(event.pct_played, Some(0.87));
     }
 

@@ -41,7 +41,7 @@ struct PreferencesRow {
     snap_affinity: f32,
     art_affinity: f32,
     music_affinity: f32,
-    flix_affinity: f32,
+    vid_affinity: f32,
     tag_preferences: serde_json::Value,
     creator_preferences: serde_json::Value,
     total_likes: i32,
@@ -63,7 +63,7 @@ fn row_to_prefs(row: PreferencesRow) -> Result<UserPreferences> {
         snap_affinity: row.snap_affinity,
         art_affinity: row.art_affinity,
         music_affinity: row.music_affinity,
-        flix_affinity: row.flix_affinity,
+        vid_affinity: row.vid_affinity,
         tag_preferences,
         creator_preferences,
         total_likes: row.total_likes,
@@ -97,7 +97,7 @@ async fn load_or_insert_prefs_for_update<'t>(
         r#"
         SELECT
             user_address,
-            snap_affinity::real, art_affinity::real, music_affinity::real, flix_affinity::real,
+            snap_affinity::real, art_affinity::real, music_affinity::real, vid_affinity::real,
             tag_preferences, creator_preferences, total_likes, total_purchases, total_views
         FROM user_preferences
         WHERE user_address = $1
@@ -122,7 +122,7 @@ async fn load_or_insert_prefs_for_update<'t>(
     sqlx::query(
         r#"
         INSERT INTO user_preferences
-            (id, user_address, snap_affinity, art_affinity, music_affinity, flix_affinity,
+            (id, user_address, snap_affinity, art_affinity, music_affinity, vid_affinity,
              tag_preferences, creator_preferences, total_likes, total_purchases, total_views,
              last_activity_at, inserted_at, updated_at)
         VALUES
@@ -134,7 +134,7 @@ async fn load_or_insert_prefs_for_update<'t>(
     .bind(new_prefs.snap_affinity)
     .bind(new_prefs.art_affinity)
     .bind(new_prefs.music_affinity)
-    .bind(new_prefs.flix_affinity)
+    .bind(new_prefs.vid_affinity)
     .bind(&tag_json)
     .bind(&creator_json)
     .bind(new_prefs.total_likes)
@@ -149,7 +149,7 @@ async fn load_or_insert_prefs_for_update<'t>(
         r#"
         SELECT
             user_address,
-            snap_affinity::real, art_affinity::real, music_affinity::real, flix_affinity::real,
+            snap_affinity::real, art_affinity::real, music_affinity::real, vid_affinity::real,
             tag_preferences, creator_preferences, total_likes, total_purchases, total_views
         FROM user_preferences
         WHERE user_address = $1
@@ -182,7 +182,7 @@ where
             snap_affinity = $2,
             art_affinity = $3,
             music_affinity = $4,
-            flix_affinity = $5,
+            vid_affinity = $5,
             tag_preferences = $6,
             creator_preferences = $7,
             total_likes = $8,
@@ -197,7 +197,7 @@ where
     .bind(prefs.snap_affinity)
     .bind(prefs.art_affinity)
     .bind(prefs.music_affinity)
-    .bind(prefs.flix_affinity)
+    .bind(prefs.vid_affinity)
     .bind(&tag_prefs_json)
     .bind(&creator_prefs_json)
     .bind(prefs.total_likes)
@@ -241,7 +241,7 @@ pub async fn get_or_create_preferences(
         r#"
         SELECT
             user_address,
-            snap_affinity::real, art_affinity::real, music_affinity::real, flix_affinity::real,
+            snap_affinity::real, art_affinity::real, music_affinity::real, vid_affinity::real,
             tag_preferences, creator_preferences, total_likes, total_purchases, total_views
         FROM user_preferences
         WHERE user_address = $1
@@ -270,7 +270,7 @@ pub async fn get_or_create_preferences(
             sqlx::query(
                 r#"
                 INSERT INTO user_preferences
-                    (id, user_address, snap_affinity, art_affinity, music_affinity, flix_affinity,
+                    (id, user_address, snap_affinity, art_affinity, music_affinity, vid_affinity,
                      tag_preferences, creator_preferences, total_likes, total_purchases, total_views,
                      last_activity_at, inserted_at, updated_at)
                 VALUES
@@ -282,7 +282,7 @@ pub async fn get_or_create_preferences(
             .bind(prefs.snap_affinity)
             .bind(prefs.art_affinity)
             .bind(prefs.music_affinity)
-            .bind(prefs.flix_affinity)
+            .bind(prefs.vid_affinity)
             .bind(&tag_prefs_json)
             .bind(&creator_prefs_json)
             .bind(prefs.total_likes)
@@ -298,7 +298,7 @@ pub async fn get_or_create_preferences(
                 r#"
                 SELECT
                     user_address,
-                    snap_affinity::real, art_affinity::real, music_affinity::real, flix_affinity::real,
+                    snap_affinity::real, art_affinity::real, music_affinity::real, vid_affinity::real,
                     tag_preferences, creator_preferences, total_likes, total_purchases, total_views
                 FROM user_preferences
                 WHERE user_address = $1

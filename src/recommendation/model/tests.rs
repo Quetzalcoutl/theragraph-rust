@@ -57,10 +57,10 @@ fn content_type_from_str_roundtrip_music() {
 }
 
 #[test]
-fn content_type_from_str_roundtrip_flix() {
-    let ct = ContentType::from_str("flix").expect("flix should parse");
-    assert_eq!(ct, ContentType::Flix);
-    assert_eq!(ct.as_str(), "flix");
+fn content_type_from_str_roundtrip_vid() {
+    let ct = ContentType::from_str("vid").expect("vid should parse");
+    assert_eq!(ct, ContentType::Vid);
+    assert_eq!(ct.as_str(), "vid");
 }
 
 // -----------------------------------------------------------------------
@@ -85,7 +85,7 @@ fn like_on_snap_content_increases_snap_affinity() {
     // Other affinities must be untouched.
     assert_eq!(prefs.art_affinity,   0.5);
     assert_eq!(prefs.music_affinity, 0.5);
-    assert_eq!(prefs.flix_affinity,  0.5);
+    assert_eq!(prefs.vid_affinity,  0.5);
 }
 
 #[test]
@@ -104,7 +104,7 @@ fn purchase_on_art_content_increases_art_affinity() {
     );
     assert_eq!(prefs.snap_affinity,  0.5);
     assert_eq!(prefs.music_affinity, 0.5);
-    assert_eq!(prefs.flix_affinity,  0.5);
+    assert_eq!(prefs.vid_affinity,  0.5);
 }
 
 #[test]
@@ -124,18 +124,18 @@ fn like_on_music_content_increases_music_affinity() {
 }
 
 #[test]
-fn view_on_flix_content_increases_flix_affinity() {
+fn view_on_vid_content_increases_vid_affinity() {
     let mut prefs = UserPreferences::default();
-    let before = prefs.flix_affinity;
+    let before = prefs.vid_affinity;
 
-    let event = make_event(InteractionType::View, Some("flix"), None, vec![], None);
+    let event = make_event(InteractionType::View, Some("vid"), None, vec![], None);
     apply_interaction_to_prefs(&mut prefs, &event, EvictionPolicy::default());
 
     let expected = (before + VIEW_WEIGHT * AFFINITY_DELTA_FACTOR).clamp(0.0, 1.0);
     assert!(
-        (prefs.flix_affinity - expected).abs() < 1e-6,
-        "flix_affinity should be {expected:.6}, got {:.6}",
-        prefs.flix_affinity
+        (prefs.vid_affinity - expected).abs() < 1e-6,
+        "vid_affinity should be {expected:.6}, got {:.6}",
+        prefs.vid_affinity
     );
 }
 
@@ -153,7 +153,7 @@ fn unknown_content_type_leaves_all_affinities_at_default() {
     assert_eq!(prefs.snap_affinity,  0.5, "snap_affinity should remain at default 0.5");
     assert_eq!(prefs.art_affinity,   0.5, "art_affinity should remain at default 0.5");
     assert_eq!(prefs.music_affinity, 0.5, "music_affinity should remain at default 0.5");
-    assert_eq!(prefs.flix_affinity,  0.5, "flix_affinity should remain at default 0.5");
+    assert_eq!(prefs.vid_affinity,  0.5, "vid_affinity should remain at default 0.5");
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn empty_content_type_string_leaves_affinities_unchanged() {
     assert_eq!(prefs.snap_affinity,  0.5);
     assert_eq!(prefs.art_affinity,   0.5);
     assert_eq!(prefs.music_affinity, 0.5);
-    assert_eq!(prefs.flix_affinity,  0.5);
+    assert_eq!(prefs.vid_affinity,  0.5);
 }
 
 #[test]
@@ -180,7 +180,7 @@ fn none_content_type_leaves_affinities_unchanged() {
     assert_eq!(prefs.snap_affinity,  0.5);
     assert_eq!(prefs.art_affinity,   0.5);
     assert_eq!(prefs.music_affinity, 0.5);
-    assert_eq!(prefs.flix_affinity,  0.5);
+    assert_eq!(prefs.vid_affinity,  0.5);
 }
 
 // -----------------------------------------------------------------------
@@ -522,7 +522,7 @@ fn not_interested_on_a_never_seen_tag_starts_from_default_0_5() {
 fn replaying_the_same_event_sequence_twice_produces_identical_preferences() {
     let events = vec![
         make_event(InteractionType::Like, Some("music"), Some("0xcreator1"), vec!["psy-trance", "ambient"], None),
-        make_event(InteractionType::View, Some("flix"), Some("0xcreator2"), vec!["psy-trance", "documentary"], Some(5_000)),
+        make_event(InteractionType::View, Some("vid"), Some("0xcreator2"), vec!["psy-trance", "documentary"], Some(5_000)),
         make_event(InteractionType::Comment, Some("art"), Some("0xcreator1"), vec!["psychedelic"], None),
         make_event(InteractionType::NotInterested, None, Some("0xcreator3"), vec!["ambient"], None),
         make_event(InteractionType::Purchase, Some("music"), Some("0xcreator1"), vec!["psy-trance"], None),
@@ -547,7 +547,7 @@ fn replaying_the_same_event_sequence_twice_produces_identical_preferences() {
     assert_eq!(first.snap_affinity, second.snap_affinity);
     assert_eq!(first.art_affinity, second.art_affinity);
     assert_eq!(first.music_affinity, second.music_affinity);
-    assert_eq!(first.flix_affinity, second.flix_affinity);
+    assert_eq!(first.vid_affinity, second.vid_affinity);
     assert_eq!(first.total_likes, second.total_likes);
     assert_eq!(first.total_purchases, second.total_purchases);
     assert_eq!(first.total_views, second.total_views);

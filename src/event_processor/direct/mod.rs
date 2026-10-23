@@ -112,20 +112,20 @@ impl DirectHandlers {
             "SnapLiked"
             | "ArtLiked"
             | "MusicLiked"
-            | "FlixLiked" => self.handle_like(event, InteractionType::Like).await,
+            | "VidLiked" => self.handle_like(event, InteractionType::Like).await,
             "SnapUnliked"
             | "ArtUnliked"
             | "MusicUnliked"
-            | "FlixUnliked" => self.handle_like(event, InteractionType::Unlike).await,
+            | "VidUnliked" => self.handle_like(event, InteractionType::Unlike).await,
             "ContentCopyMinted"
             | "SnapBoughtAndMinted"
             | "ArtBoughtAndMinted"
             | "MusicBoughtAndMinted"
-            | "FlixBoughtAndMinted" => self.handle_purchase(event).await,
+            | "VidBoughtAndMinted" => self.handle_purchase(event).await,
             "SnapCommented"
             | "ArtCommented"
             | "MusicCommented"
-            | "FlixCommented" => self.handle_generic_interaction(event, InteractionType::Comment, "feed").await,
+            | "VidCommented" => self.handle_generic_interaction(event, InteractionType::Comment, "feed").await,
             "ContentBookmarked" => self.handle_generic_interaction(event, InteractionType::Save, "feed").await,
             "ContentShared" => self.handle_generic_interaction(event, InteractionType::Share, "feed").await,
             _ => Ok(()),
@@ -394,21 +394,21 @@ pub(crate) fn classify_event_type(event_type: &str) -> Option<&'static str> {
     match event_type {
         "Followed" => Some("follow"),
         "Unfollowed" => Some("unfollow"),
-        "SnapLiked" | "ArtLiked" | "MusicLiked" | "FlixLiked" => {
+        "SnapLiked" | "ArtLiked" | "MusicLiked" | "VidLiked" => {
             Some("like")
         }
-        "SnapUnliked" | "ArtUnliked" | "MusicUnliked" | "FlixUnliked" => {
+        "SnapUnliked" | "ArtUnliked" | "MusicUnliked" | "VidUnliked" => {
             Some("unlike")
         }
         "ContentCopyMinted"
         | "SnapBoughtAndMinted"
         | "ArtBoughtAndMinted"
         | "MusicBoughtAndMinted"
-        | "FlixBoughtAndMinted" => Some("purchase"),
+        | "VidBoughtAndMinted" => Some("purchase"),
         "SnapCommented"
         | "ArtCommented"
         | "MusicCommented"
-        | "FlixCommented" => Some("comment"),
+        | "VidCommented" => Some("comment"),
         "ContentBookmarked" => Some("save"),
         "ContentShared" => Some("share"),
         _ => None,

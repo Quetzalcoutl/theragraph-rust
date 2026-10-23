@@ -40,7 +40,7 @@ pub(crate) fn compute_type_affinity_score(
         .snap_affinity
         .max(prefs.art_affinity)
         .max(prefs.music_affinity)
-        .max(prefs.flix_affinity);
+        .max(prefs.vid_affinity);
 
     // Apply non-linear boost for high affinity (ByteGraph-style)
     // Extra boost if this matches user's primary interest
@@ -338,7 +338,7 @@ pub(crate) fn apply_diversity_shuffle_static(mut scored: Vec<ScoredNft>, limit: 
     //
     // I4: 4-slot array replaces HashMap<String,usize> — eliminates contract_type.clone()
     // on every item (50 clones/feed) and HashMap hashing overhead. Index: snap=0, art=1,
-    // music=2, flix/unknown=3.
+    // music=2, vid/unknown=3.
     let max_per_type = ((limit as f32 * 0.60).ceil() as usize).max(1);
     let mut type_counts = [0usize; 4];
     result.retain(|item| {

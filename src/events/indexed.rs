@@ -43,7 +43,7 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
         EventType::SnapMinted
         | EventType::ArtMinted
         | EventType::MusicMinted
-        | EventType::FlixMinted => match param_index {
+        | EventType::VidMinted => match param_index {
             0 => IndexedParamType::Uint256, // tokenId
             _ => IndexedParamType::Bytes32,
         },
@@ -84,7 +84,7 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
         EventType::SnapLiked
         | EventType::ArtLiked
         | EventType::MusicLiked
-        | EventType::FlixLiked => match param_index {
+        | EventType::VidLiked => match param_index {
             0 => IndexedParamType::Uint256, // tokenId
             _ => IndexedParamType::Bytes32,
         },
@@ -93,7 +93,7 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
         EventType::SnapCommented
         | EventType::ArtCommented
         | EventType::MusicCommented
-        | EventType::FlixCommented => match param_index {
+        | EventType::VidCommented => match param_index {
             0 => IndexedParamType::Uint256, // tokenId
             _ => IndexedParamType::Bytes32,
         },
@@ -102,7 +102,7 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
         EventType::SnapBoughtAndMinted
         | EventType::ArtBoughtAndMinted
         | EventType::MusicBoughtAndMinted
-        | EventType::FlixBoughtAndMinted => match param_index {
+        | EventType::VidBoughtAndMinted => match param_index {
             0 => IndexedParamType::Uint256, // tokenId
             _ => IndexedParamType::Bytes32,
         },
@@ -111,7 +111,7 @@ fn get_indexed_param_type(event_type: &EventType, param_index: usize) -> Indexed
         EventType::SnapDeleted
         | EventType::ArtDeleted
         | EventType::MusicDeleted
-        | EventType::FlixDeleted => match param_index {
+        | EventType::VidDeleted => match param_index {
             0 => IndexedParamType::Uint256, // tokenId
             _ => IndexedParamType::Bytes32,
         },

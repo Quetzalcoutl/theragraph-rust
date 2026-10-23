@@ -28,11 +28,11 @@ pub enum InteractionType {
     /// half-life (10 days) and write EDGE_MUSIC_LISTEN instead of view_event.
     /// 30-second minimum enforced at the API boundary before this variant fires.
     Listen,
-    /// Dedicated flix watch signal — carries pct_played (completion rate) +
+    /// Dedicated vid watch signal — carries pct_played (completion rate) +
     /// view_duration_ms (actual watch seconds). Distinct from View so Nebula
-    /// can apply flix-specific half-life and write EDGE_FLIX_WATCH.
+    /// can apply vid-specific half-life and write EDGE_VID_WATCH.
     /// 10-second minimum enforced at the API boundary (Next.js route).
-    FlixWatch,
+    VidWatch,
     Like,
     Unlike,
     Comment,
@@ -51,7 +51,7 @@ impl std::fmt::Display for InteractionType {
         match self {
             InteractionType::View => write!(f, "view"),
             InteractionType::Listen => write!(f, "listen"),
-            InteractionType::FlixWatch => write!(f, "flix_watch"),
+            InteractionType::VidWatch => write!(f, "vid_watch"),
             InteractionType::Like => write!(f, "like"),
             InteractionType::Unlike => write!(f, "unlike"),
             InteractionType::Comment => write!(f, "comment"),
@@ -75,7 +75,7 @@ pub struct UserPreferences {
     pub snap_affinity: f32,
     pub art_affinity: f32,
     pub music_affinity: f32,
-    pub flix_affinity: f32,
+    pub vid_affinity: f32,
 
     // Tag preferences: tag -> weight
     pub tag_preferences: HashMap<Box<str>, f32>,
@@ -96,7 +96,7 @@ impl Default for UserPreferences {
             snap_affinity: 0.5,
             art_affinity: 0.5,
             music_affinity: 0.5,
-            flix_affinity: 0.5,
+            vid_affinity: 0.5,
             tag_preferences: HashMap::new(),
             creator_preferences: HashMap::new(),
             total_likes: 0,
@@ -117,7 +117,7 @@ impl UserPreferences {
             ContentType::Snap  => self.snap_affinity,
             ContentType::Art   => self.art_affinity,
             ContentType::Music => self.music_affinity,
-            ContentType::Flix  => self.flix_affinity,
+            ContentType::Vid  => self.vid_affinity,
         }
     }
 
@@ -165,7 +165,7 @@ impl std::str::FromStr for InteractionType {
         match s {
             "view"           => Ok(Self::View),
             "listen"         => Ok(Self::Listen),
-            "flix_watch"     => Ok(Self::FlixWatch),
+            "vid_watch"     => Ok(Self::VidWatch),
             "like"           => Ok(Self::Like),
             "unlike"         => Ok(Self::Unlike),
             "purchase"       => Ok(Self::Purchase),
@@ -297,7 +297,7 @@ pub fn interaction_weight(event: &InteractionEvent) -> f32 {
         InteractionType::Share         => SHARE_WEIGHT,
         InteractionType::Save          => SAVE_WEIGHT,
         InteractionType::NotInterested => NOT_INTERESTED_WEIGHT,
-        InteractionType::FlixWatch => {
+        InteractionType::VidWatch => {
             // YouTube engineers: weight = completion rate × base watch weight.
             // High-completion watch (0.9+) ≈ Like signal. Skip (0.1) ≈ mild View.
             LISTEN_WEIGHT * event.pct_played.unwrap_or(1.0).clamp(0.0, 1.0)
@@ -409,7 +409,7 @@ fn update_content_affinity(prefs: &mut UserPreferences, contract_type: &str, wei
         Some(ContentType::Snap)  => &mut prefs.snap_affinity,
         Some(ContentType::Art)   => &mut prefs.art_affinity,
         Some(ContentType::Music) => &mut prefs.music_affinity,
-        Some(ContentType::Flix)  => &mut prefs.flix_affinity,
+        Some(ContentType::Vid)  => &mut prefs.vid_affinity,
         None                     => return,
     };
     *affinity_field = (*affinity_field + delta).clamp(0.0, 1.0);

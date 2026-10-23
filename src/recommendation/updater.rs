@@ -128,21 +128,21 @@ pub async fn update_all_recommendations(
             // WIRE-04: remove leading underscores — these values ARE used: each
             // get_*_fof_* call writes its results to the Redis cache so that
             // get_recommendations/get_enhanced_feed can read them during scoring.
-            let (rec_result, follow_result, enhanced_result, genre_result, fof_recs, view_fof_recs, comment_fof_recs, purchase_fof_recs, share_fof_recs, bookmark_fof_recs, flix_fof_recs, style_prefs) = tokio::join!(
+            let (rec_result, follow_result, enhanced_result, genre_result, fof_recs, view_fof_recs, comment_fof_recs, purchase_fof_recs, share_fof_recs, bookmark_fof_recs, vid_fof_recs, style_prefs) = tokio::join!(
                 engine.get_recommendations_coalesced(&user_address, 50, None, true, &[]),
                 engine.get_following_feed(&user_address, 50, 0),
                 engine.warmup_enhanced_feed(&user_address),
                 engine.warmup_genre_feed(&user_address),
                 // GraphTraversal impls are infallible (errors swallowed + logged inside).
                 // All seven FoF variants are pre-warmed so the Redis cache is hot at request time.
-                // ByteGraph signal hierarchy: purchase (0.15) → share (0.12) → follow-like (0.10) → flix_watch (0.08) → bookmark (0.08) → comment (0.05) → view (0.05)
+                // ByteGraph signal hierarchy: purchase (0.15) → share (0.12) → follow-like (0.10) → vid_watch (0.08) → bookmark (0.08) → comment (0.05) → view (0.05)
                 graph_client.get_fof_recommendations(&user_address),
                 graph_client.get_view_event_fof_recommendations(&user_address),
                 graph_client.get_comment_fof_recommendations(&user_address),
                 graph_client.get_purchase_fof_recommendations(&user_address),
                 graph_client.get_shared_fof_recommendations(&user_address),
                 graph_client.get_bookmark_fof_recommendations(&user_address),
-                graph_client.get_flix_watch_fof_recommendations(&user_address),
+                graph_client.get_vid_watch_fof_recommendations(&user_address),
                 // Companion chat signal (style_preference edges) — same pre-warm
                 // pattern as FoF: apply_cache_boosts only ever reads the Redis
                 // cache this populates, never traverses Nebula on the request path.
@@ -155,7 +155,7 @@ pub async fn update_all_recommendations(
                 fof_purchase_count = purchase_fof_recs.len(),
                 fof_share_count = share_fof_recs.len(),
                 fof_bookmark_count = bookmark_fof_recs.len(),
-                fof_flix_count = flix_fof_recs.len(),
+                fof_vid_count = vid_fof_recs.len(),
                 style_prefs_count = style_prefs.len(),
                 "FoF cache pre-warm counts for {}",
                 user_address,

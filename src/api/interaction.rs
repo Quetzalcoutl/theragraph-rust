@@ -147,12 +147,12 @@ pub(super) async fn dispatch_graph_interaction(
     comment_text: String,
 ) {
     match itype {
-        InteractionType::FlixWatch => {
+        InteractionType::VidWatch => {
             let dur_secs = ((duration_ms.unwrap_or(0).max(0) / 1000) as u64)
                 .min(7200_u64) as u32;
             let pct = pct_played.unwrap_or(0.0).clamp(0.0, 1.0);
             let event_id = format!("fw:{}:{}", user, nft_id);
-            graph.write_flix_watch_edge(&user, &nft_id, &event_id, dur_secs, pct).await;
+            graph.write_vid_watch_edge(&user, &nft_id, &event_id, dur_secs, pct).await;
         }
         InteractionType::Listen => {
             // Spotify engineers: rate-limit Nebula writes to prevent loop-listener inflation.
