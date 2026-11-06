@@ -42,13 +42,17 @@ COPY Cargo.toml Cargo.lock ./
 COPY migrations/ ./migrations/
 COPY .sqlx/ .sqlx/
 
-# Install build tools needed for native deps and warm the cargo target cache using a tiny dummy crate
+# Install build tools needed for native deps and warm the cargo target cache using a tiny dummy crate.
+# libcurl4-openssl-dev is needed for its HEADER only: librdkafka 2.12.1's rdkafka_conf.c does `#ifdef WITH_OAUTHBEARER_OIDC #include <curl/curl.h>`
+# and the build defines that macro as 0 (curl support is off), which `#ifdef` still counts as defined. Nothing links against curl.
+# (A trixie builder and then a bookworm one failed on exactly this line, 2026-11-06: the compiler was never the problem.)
 RUN apt-get update -qq && apt-get install -y -qq \
     build-essential \
     cmake \
     pkg-config \
     libsasl2-dev \
     libssl-dev \
+    libcurl4-openssl-dev \
     ca-certificates \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p src \
