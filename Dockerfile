@@ -2,7 +2,11 @@
 # - Builder: caches deps, supports SQLX_OFFLINE by including .sqlx and migrations
 # - Runtime: minimal Debian image, explicit runtime packages, healthcheck
 
-FROM rust:1.79-slim AS builder
+# The Rust version must be the one the project pins: Cargo.toml says rust-version = "1.95" and rust-toolchain.toml says 1.95.0. A
+# builder older than that stops at the very first `cargo build` (exit 101: "requires rustc 1.95 or newer"). This was rust:1.79-slim
+# until 2026-11-06, when the first Coolify build of the current code failed there. The Debian release matches the runtime stage
+# below (trixie), so the binary's glibc is never newer than the runtime's.
+FROM rust:1.95.0-slim-trixie AS builder
 
 LABEL org.opencontainers.image.source="https://github.com/Quetzalcoutl/theragraph-rust"
 
@@ -83,7 +87,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Install only what's necessary for runtime + debugging/health checks
 RUN apt-get update -qq && apt-get install -y -qq \
     ca-certificates \
-    libssl3 \
+    libssl3t64 \
     libsasl2-2 \
     procps \
     netcat-openbsd \
@@ -108,6 +112,13 @@ COPY --from=builder /app/target/release/theragraph /app/theragraph
 COPY --from=builder /app/target/release/examples/consumer_nebula /app/consumer_nebula
 COPY --from=builder /app/examples/ /app/examples/
 RUN ["/bin/sh","-c","[ -f /app/consumer_nebula ] && chmod +x /app/consumer_nebula || true; [ -f /app/theragraph ] && chmod +x /app/theragraph || true"]
+
+# Fail the BUILD, not the first start, if the binary needs a library (or a newer glibc) that this image does not have.
+RUN if ldd /app/theragraph 2>&1 | grep -q "not found"; then \
+      ldd /app/theragraph >&2; \
+      echo "FATAL: the binary needs libraries this image does not have: build and run on the same Debian release" >&2; \
+      exit 1; \
+    fi
 
 # Expose API port
 EXPOSE ${API_PORT}
