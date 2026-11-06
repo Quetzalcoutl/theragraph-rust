@@ -4,18 +4,22 @@
 
 # The Rust version must be the one the project pins: Cargo.toml says rust-version = "1.95" and rust-toolchain.toml says 1.95.0. A
 # builder older than that stops at the very first `cargo build` (exit 101: "requires rustc 1.95 or newer"). This was rust:1.79-slim
-# until 2026-11-06, when the first Coolify build of the current code failed there. The Debian release matches the runtime stage
-# below (trixie), so the binary's glibc is never newer than the runtime's.
-FROM rust:1.95.0-slim-trixie AS builder
+# until 2026-11-06, when the first Coolify build of the current code failed there.
+#
+# The Debian release is bookworm (GCC 12, OpenSSL 3.0) ON PURPOSE: the same build on trixie failed twice, at the same file, compiling
+# librdkafka's rdkafka_conf.c (2026-11-06), and bookworm is the environment this project has always built in. The runtime stage below is
+# NEWER (trixie): a binary built against an older glibc runs on a newer one, never the other way round, and the ldd check in the runtime
+# stage proves it at build time.
+FROM rust:1.95.0-slim-bookworm AS builder
 
 LABEL org.opencontainers.image.source="https://github.com/Quetzalcoutl/theragraph-rust"
 
 ARG CHAIN_ID=11155111
 ARG API_PORT=8081
-ARG DATABASE_URL
 ARG RPC_URL
 ARG KAFKA_BROKERS=kafka:29092
-ARG ELIXIR_DATABASE_URL
+# (No DATABASE_URL / ELIXIR_DATABASE_URL build args: Coolify feeds every env var in as a build arg, and a build arg that a RUN step reads is
+# written into that layer's history on the build host. The build needs no database: SQLX_OFFLINE=1 and the committed .sqlx data.)
 ARG COOLIFY_URL
 ARG COOLIFY_FQDN
 ARG COOLIFY_BRANCH
@@ -24,6 +28,10 @@ ARG COOLIFY_RESOURCE_UUID
 ENV DEBIAN_FRONTEND=noninteractive
 ENV SQLX_OFFLINE=1
 ENV CARGO_BUILD_JOBS=1
+
+# pipefail: the two cargo steps below pipe through `tee` so their output still streams live AND a failure prints the first errors at the
+# END of the log (BuildKit shows only the last lines of a failed step: the compiler's own message used to be cut off).
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 WORKDIR /app
 
@@ -46,27 +54,21 @@ RUN apt-get update -qq && apt-get install -y -qq \
   && mkdir -p src \
   && echo "fn main() {}" > src/main.rs \
   && echo "pub fn __dummy_lib() {}" > src/lib.rs \
-  && cargo build --release --locked -j 1 \
+  && echo "--- build host: $(df -h / | tail -1) | $(free -m | sed -n 2p)" \
+  && ( cargo build --release --locked -j 1 2>&1 | tee /tmp/deps-build.log \
+       || { echo "=== dependency build FAILED: the first errors ==="; grep -nE '^error|error\[|error:|Killed|No space|fatal' /tmp/deps-build.log | head -12; exit 1; } ) \
   && rm -rf src
 
 # Copy source and build the release binary
 COPY src ./src
 
-# If DATABASE_URL build-arg is provided and cargo-sqlx exists in builder, attempt prepare (non-fatal)
-RUN if [ -n "$DATABASE_URL" ]; then \
-      echo "DATABASE_URL provided; attempting cargo sqlx prepare if sqlx-cli is installed"; \
-      if command -v cargo-sqlx >/dev/null 2>&1; then \
-        export DATABASE_URL="$DATABASE_URL" && cargo sqlx prepare -- -q || echo "cargo sqlx prepare failed"; \
-      else \
-        echo "sqlx-cli not found, skipping prepare"; \
-      fi; \
-    else \
-      echo "No DATABASE_URL build-arg; relying on committed .sqlx and SQLX_OFFLINE=1"; \
-    fi
+# (The queries are checked offline against the committed .sqlx data: SQLX_OFFLINE=1 above. Run `cargo sqlx prepare` on a developer machine
+# and commit .sqlx when a query changes.)
 
 # Real build: produce release binary and optional example
 RUN touch src/main.rs \
-  && cargo build --release --locked -j 1 \
+  && ( cargo build --release --locked -j 1 2>&1 | tee /tmp/app-build.log \
+       || { echo "=== release build FAILED: the first errors ==="; grep -nE '^error|error\[|error:|Killed|No space|fatal' /tmp/app-build.log | head -12; exit 1; } ) \
   && if [ -d examples ]; then cargo build --release --example consumer_nebula || true; fi \
   && mkdir -p /app/target/release/examples /app/examples \
   && [ -f /app/target/release/examples/consumer_nebula ] || touch /app/target/release/examples/consumer_nebula
