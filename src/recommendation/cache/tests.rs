@@ -680,6 +680,44 @@ use super::*;
         assert_ne!(CacheKey::user_suggestions(v1, c1), CacheKey::user_suggestions(c1, v1));
     }
 
+    // ── keys the Elixir indexer clears on a follow ─────────────────────────────
+
+    /// `TheraGraph.Cache.CacheKey.rust_social_keys/1` (theragraph-indexer/lib/theragraph/cache/cache_key.ex) builds
+    /// EXACTLY these strings, in this order, to clear a person's recommendation caches when their follow graph changes
+    /// (Rust's own follow path clears the same set via `delete_following`, `delete_recommendations`, `delete_fof_all`).
+    /// Elixir used to delete the pre-v2 `rec:fof:<addr>` instead, a key nothing here reads, so a new follow stayed
+    /// invisible until the TTLs (300 s / 600 s) ran out. If a prefix or version is bumped in keys.rs or
+    /// `FofBucket::prefix()`, this test fails: update the Elixir list and its pinned test (cache_key_test.exs) with it.
+    #[test]
+    fn keys_elixir_clears_on_follow_are_pinned() {
+        use crate::recommendation::schema_consts::{
+            FEED_TYPE_ENHANCED, FEED_TYPE_FOLLOWING, FEED_TYPE_PERSONALIZED, FEED_TYPE_TRENDING,
+        };
+        let a = "0xABC";
+        let mut keys: Vec<String> = FofBucket::all().iter().map(|b| CacheKey::fof_bucket(*b, a)).collect();
+        keys.push(CacheKey::following(a));
+        for feed_type in [FEED_TYPE_PERSONALIZED, FEED_TYPE_ENHANCED, FEED_TYPE_TRENDING, FEED_TYPE_FOLLOWING] {
+            keys.push(CacheKey::recs(a, feed_type));
+        }
+        assert_eq!(
+            keys,
+            vec![
+                "rec:fof:v2:0xabc",
+                "rec:fof_view:v2:0xabc",
+                "rec:fof_comment:v2:0xabc",
+                "rec:fof_purchase:v2:0xabc",
+                "rec:fof_share:v2:0xabc",
+                "rec:fof_bookmark:v2:0xabc",
+                "rec:fof_vid:v2:0xabc",
+                "rec:following:v2:0xabc",
+                "rec:results:v2:0xabc:personalized",
+                "rec:results:v2:0xabc:enhanced",
+                "rec:results:v2:0xabc:trending",
+                "rec:results:v2:0xabc:following",
+            ]
+        );
+    }
+
     // ── compile-time guarantee note ──────────────────────────────────────────
 
     // There are no hardcoded prefix strings scattered in the rest of the codebase.

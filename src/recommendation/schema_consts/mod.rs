@@ -43,8 +43,8 @@ pub const SPACE_THERAGRAPH: &str = "theragraph";
 /// drop/recreate needed since these are genuinely new property names (unlike
 /// migration 24's `reaction_type`/`content_type`, which hit NebulaGraph v3's
 /// permanent "can't re-add a dropped property name" wall).
-/// Migrations 27-29 (TheraFlix became TheraVid, 2026-10-23): the watch edge type is `vid_watch` (27), its indexes (28), and the old
-/// `flix_watch` edge and its indexes are dropped (29). Nebula cannot rename an edge type.
+/// Migrations 27-29 (TheraVid became TheraVid, 2026-10-23): the watch edge type is `vid_watch` (27), its indexes (28), and the old
+/// `vid_watch` edge and its indexes are dropped (29). Nebula cannot rename an edge type.
 pub const NEBULA_SCHEMA_VERSION: u32 = 29;
 
 /// Parse the `version` integer out of the ASCII table `nebula-console` prints

@@ -9,21 +9,18 @@ use tracing::{error, warn};
 use crate::recommendation::{
     graph_client::GraphTraversal,
     preferences::{record_interaction, InteractionEvent, InteractionType},
+    recorder::{creator_affinity_delta, record_view_batch, sync_creator_affinity_delta_to_prefs, MAX_VIEW_BATCH},
 };
 use super::{
-    AppState, InteractionRequest,
+    AppState, InteractionBatchRequest, InteractionRequest,
     require_internal_key, is_valid_eth_address,
     MAX_NFT_ID_LEN, MAX_SOURCE_LEN, MAX_CONTRACT_TYPE_LEN, MAX_TAG_LEN, MAX_TAGS,
     MAX_COMMENT_TEXT_LEN,
 };
 
-/// Record a user interaction
-pub(super) async fn record_user_interaction(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    axum::Json(req): axum::Json<InteractionRequest>,
-) -> Result<StatusCode, StatusCode> {
-    require_internal_key(&headers, state.internal_api_key.as_deref())?;
+/// Validate one interaction request and return its parsed type. Shared by the single and the batch handler so both
+/// enforce exactly the same limits (addresses, duration cap, UUID, field lengths, listen minimums).
+fn validate_interaction(req: &InteractionRequest) -> Result<InteractionType, StatusCode> {
     // Validate required address fields
     if !is_valid_eth_address(&req.user_address) {
         return Err(StatusCode::BAD_REQUEST);
@@ -83,6 +80,18 @@ pub(super) async fn record_user_interaction(
         }
     }
 
+    Ok(interaction_type)
+}
+
+/// Record a user interaction
+pub(super) async fn record_user_interaction(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::Json(req): axum::Json<InteractionRequest>,
+) -> Result<StatusCode, StatusCode> {
+    require_internal_key(&headers, state.internal_api_key.as_deref())?;
+    let interaction_type = validate_interaction(&req)?;
+
     let event = InteractionEvent {
         user_address: req.user_address.clone(),
         nft_id: req.nft_id.clone(),
@@ -126,6 +135,104 @@ pub(super) async fn record_user_interaction(
         Err(e) => {
             error!("Failed to record interaction: {:?}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// Record a batch of VIEW interactions in one request (the client coalesces the views of a short window).
+///
+/// Only views are accepted here; anything else in the batch (a like, a purchase...), an event of another user than the
+/// first, or an event failing the single path's validation is skipped and counted, never recorded. The response says
+/// how many were recorded and how many skipped. A batch with nothing valid is a 400.
+pub(super) async fn record_user_view_batch(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::Json(batch): axum::Json<InteractionBatchRequest>,
+) -> Result<(StatusCode, axum::Json<serde_json::Value>), StatusCode> {
+    require_internal_key(&headers, state.internal_api_key.as_deref())?;
+    if batch.interactions.is_empty() || batch.interactions.len() > MAX_VIEW_BATCH {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let total = batch.interactions.len();
+    let user = batch.interactions[0].user_address.to_lowercase();
+
+    let mut events: Vec<InteractionEvent> = Vec::with_capacity(total);
+    for req in &batch.interactions {
+        let valid = req.user_address.to_lowercase() == user
+            && matches!(validate_interaction(req), Ok(InteractionType::View));
+        if !valid {
+            continue;
+        }
+        events.push(InteractionEvent {
+            user_address: req.user_address.clone(),
+            nft_id: req.nft_id.clone(),
+            interaction_type: InteractionType::View,
+            view_duration_ms: req.view_duration_ms,
+            pct_played: req.pct_played,
+            source: req.source.clone(),
+            nft_contract_type: req.nft_contract_type.clone(),
+            nft_creator_address: req.nft_creator_address.clone(),
+            nft_tags: req.nft_tags.clone().unwrap_or_default(),
+            tag_enrichment: Default::default(),
+            event_id: None,
+        });
+    }
+    if events.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let skipped = total - events.len();
+
+    // Graph edge writes run in the background, never blocking the response: the same Nebula writes as one view each,
+    // but ONE task for the batch, and the Postgres creator-preference sync summed per creator.
+    if let Some(ref graph) = state.graph {
+        let write_fut = dispatch_graph_view_batch(Arc::clone(graph), state.pool.clone(), user.clone(), events.clone());
+        if let Some(ref tracker) = state.task_tracker {
+            tracker.spawn(write_fut);
+        } else {
+            tokio::spawn(write_fut);
+        }
+    }
+
+    match record_view_batch(&state.pool, events, state.engine.cache()).await {
+        Ok(recorded) => Ok((
+            StatusCode::CREATED,
+            axum::Json(serde_json::json!({ "recorded": recorded, "skipped": skipped })),
+        )),
+        Err(e) => {
+            error!("Failed to record view batch: {:?}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// Graph edge writes for a batch of views of one user: per view the same two Nebula writes as the single path
+/// (`write_view_event` + `write_creator_affinity`, their per-call counters stay exact), and the Postgres
+/// creator-preference sync applied ONCE per creator with the summed per-view deltas (additive, capped on the sum).
+pub(super) async fn dispatch_graph_view_batch(
+    graph: Arc<dyn GraphTraversal>,
+    pool: PgPool,
+    user: String,
+    events: Vec<InteractionEvent>,
+) {
+    let mut creator_deltas: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    for ev in &events {
+        let dur_secs = ((ev.view_duration_ms.unwrap_or(0).max(0) / 1000) as u64).min(u32::MAX as u64) as u32;
+        let event_id = format!("view:{}:{}", user, ev.nft_id);
+        tokio::join!(
+            graph.write_view_event(&user, &ev.nft_id, &event_id, dur_secs),
+            async {
+                if let Some(ref creator_addr) = ev.nft_creator_address {
+                    graph.write_creator_affinity(&user, creator_addr, dur_secs).await;
+                }
+            },
+        );
+        if let (Some(creator_addr), Some(delta)) = (ev.nft_creator_address.as_ref(), creator_affinity_delta(dur_secs)) {
+            *creator_deltas.entry(creator_addr.to_lowercase()).or_insert(0.0) += delta;
+        }
+    }
+    for (creator, delta) in creator_deltas {
+        if let Err(e) = sync_creator_affinity_delta_to_prefs(&pool, &user, &creator, delta).await {
+            warn!("[dispatch] batched creator affinity sync failed: {e}");
         }
     }
 }

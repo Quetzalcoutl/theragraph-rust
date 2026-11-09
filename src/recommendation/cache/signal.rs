@@ -25,6 +25,39 @@ impl RecCache {
 
     // ── Session recency signals ───────────────────────────────────────────────
 
+    /// Prepend several session signals (oldest first) in ONE round trip: LPUSH of all values + LTRIM + EXPIRE as a
+    /// single pipeline, the batched view path's counterpart of [`append_session_signal`](Self::append_session_signal).
+    /// The list still holds only the 20 newest. Best-effort, like the single append.
+    pub async fn append_session_signals(&self, user_address: &str, signals: Vec<SessionSignal>) {
+        if signals.is_empty() {
+            return;
+        }
+        let key = CacheKey::session(user_address);
+        let mut raws: Vec<Vec<u8>> = Vec::with_capacity(signals.len());
+        for signal in &signals {
+            match Self::encode(signal) {
+                Ok(raw) => raws.push(raw),
+                Err(e) => warn!("SessionSignal serialize error for {}: {}", user_address, e),
+            }
+        }
+        if raws.is_empty() {
+            return;
+        }
+        let mut conn = self.conn_clone();
+        if let Err(e) = redis::pipe()
+            .lpush(&key, raws)
+            .ignore()
+            .ltrim(&key, 0, 19)
+            .ignore()
+            .expire(&key, SESSION_TTL as i64)
+            .ignore()
+            .query_async::<()>(&mut conn)
+            .await
+        {
+            warn!("RecCache session signals pipeline failed for {}: {}", user_address, e);
+        }
+    }
+
     /// Prepend a session signal to the user's session list and trim to 20 entries.
     ///
     /// LPUSH + LTRIM + EXPIRE are issued as a single pipeline (one round-trip).

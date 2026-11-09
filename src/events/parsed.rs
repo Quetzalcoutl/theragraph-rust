@@ -79,6 +79,61 @@ pub enum ParsedEventData {
         max_copies: String,
         timestamp: String,
     },
+    // ── TheraFriendzV2 (v10) variants ───────────────────────────────────
+    //
+    // V1's `handle_content_minted` / `handle_content_copy_minted` /
+    // `handle_listing_updated` in TheraGraph.Indexer.EventHandlers destructure
+    // "contract_address" (and, for mint/copy, "transaction_hash"/"block_number")
+    // directly out of the event's `data` map — fields the plain `Minted` /
+    // `CopyMinted` variants above never carried. These v10-only variants add
+    // them explicitly rather than retrofitting the shared v1 variants (which
+    // would force touching every existing construction site in `data.rs` for
+    // a contract this indexer doesn't even watch). See
+    // `indexer::thera_friendz_v2` for why: v10's real ABI (ListingCreated +
+    // ContentMetadata, CopyPurchased, …) is emitted under the SAME event_type
+    // strings ("ContentMinted", "ContentCopyMinted", "ListingUpdated") so the
+    // existing Elixir dispatch table needs no changes, but the richer v10
+    // payload can carry the fields those handlers actually need.
+    MintedV2 {
+        token_id: String,
+        uri: String,
+        creator: String,
+        content_type: String,
+        price: String,
+        timestamp: String,
+        contract_address: String,
+        block_number: u64,
+        transaction_hash: String,
+    },
+    CopyMintedV2 {
+        original_id: String,
+        buyer: String,
+        new_token_id: String,
+        content_type: String,
+        timestamp: String,
+        contract_address: String,
+        block_number: u64,
+        transaction_hash: String,
+    },
+    ListingUpdatedV2 {
+        original_token_id: String,
+        price: String,
+        max_copies: String,
+        timestamp: String,
+        contract_address: String,
+    },
+    /// v10's `ContentModerated(originalId, blocked)` carries neither a
+    /// moderator address nor a reason string (unlike the legacy ABI
+    /// `ContentBlocked` decodes elsewhere in this enum) — see
+    /// `indexer::thera_friendz_v2::decode_content_moderated` for the
+    /// placeholder values this is built with and why they're safe no-ops
+    /// against `ContentMutations.block_content/4`.
+    ContentBlockedV2 {
+        token_id: String,
+        contract_address: String,
+        moderator: String,
+        reason: String,
+    },
     Bookmarked {
         token_id: String,
         user: String,

@@ -5,14 +5,21 @@
 //!
 //! # Indexers
 //!
-//! - `thera_friendz` (a re-export of `thera_social`) - the sole indexer for the
-//!   unified TheraFriendz contract (content + social events). A second,
-//!   `friend` indexer used to also poll this exact same contract address with
-//!   the identical event parser — differing only in its cursor name — so every
-//!   event was processed twice from two independent block cursors. Removed;
-//!   see the comment on `spawn_indexers` in main.rs for the full history.
+//! - `thera_friendz` (a re-export of `thera_social`) - the indexer for the
+//!   legacy/v1 unified TheraFriendz contract (content + social events). A
+//!   second, `friend` indexer used to also poll this exact same contract
+//!   address with the identical event parser — differing only in its cursor
+//!   name — so every event was processed twice from two independent block
+//!   cursors. Removed; see the comment on `spawn_indexers` in main.rs for the
+//!   full history.
+//! - `thera_friendz_v2` - the indexer for the v10 `TheraFriendzV2` contract
+//!   (`THERA_FRIENDZ_V2_ADDRESS`), which the app has minted against since the
+//!   v10 cutover but which, until this indexer existed, no watcher observed.
+//!   Runs alongside `thera_friendz` (v1), never replacing it — old content
+//!   must keep working. See its module doc for the event-ABI mapping.
 
 pub mod thera_friendz;
+pub mod thera_friendz_v2;
 pub mod thera_social;
 
 use crate::error::{Error, Result};
@@ -43,6 +50,23 @@ pub trait ContractType: Send + Sync + 'static {
     fn event_parse_type(&self) -> &'static str;
     /// Human-readable name for log messages.
     fn display_name(&self) -> &'static str;
+
+    /// Turn one fetched batch of raw logs into the outgoing parsed events.
+    ///
+    /// Default: parse each log independently via `events::parse_log` — today's
+    /// behavior for every existing indexer (one raw log == one logical event).
+    /// Override this when a contract's logical event is split across multiple
+    /// raw logs in the same transaction and needs batch-local correlation
+    /// before it can be emitted. `TheraFriendzV2Contract` is the first such
+    /// case: its `ListingCreated` + `ContentMetadata` pair (always emitted
+    /// together) only becomes one "ContentMinted" event once both are seen.
+    /// A transaction's logs can never span a block-range batch boundary, so
+    /// correlating within one `parse_logs` call is always sufficient.
+    fn parse_logs(&self, logs: &[Log]) -> Vec<Result<crate::events::ParsedEvent>> {
+        logs.iter()
+            .map(|log| crate::events::parse_log(log, self.event_parse_type()))
+            .collect()
+    }
 }
 
 /// One indexer instance for any `ContractType`.
@@ -153,21 +177,30 @@ impl<C: ContractType> GenericIndexer<C> {
             );
         }
 
-        // Fan out log processing concurrently — each log independently hits Kafka
+        // Fan out log processing concurrently — each event independently hits Kafka
         // (and no shared mutable state), so processing them in parallel gives
         // ~N× throughput on busy blocks without any coordination overhead.
+        //
+        // Parsing happens up front via `parse_logs` (not per-log inside the
+        // fan-out) so a `ContractType` that needs to correlate multiple raw
+        // logs into one event (see the trait doc) sees the whole batch at once.
         if !logs.is_empty() {
+            let parsed_events = self.contract.parse_logs(&logs);
             let kafka = self.kafka.clone();
-            let parse_type = self.contract.event_parse_type();
             let indexer_name = self.contract.display_name();
             let direct = self.direct.clone();
 
-            let futs: Vec<_> = logs
+            let futs: Vec<_> = parsed_events
                 .into_iter()
-                .map(|log| {
+                .map(|parsed_result| {
                     let kafka = kafka.clone();
                     let direct = direct.clone();
-                    async move { Self::process_log_static(&log, parse_type, &kafka, direct.as_ref()).await }
+                    async move {
+                        match parsed_result {
+                            Ok(parsed) => Self::dispatch_parsed_event(parsed, &kafka, direct.as_ref()).await,
+                            Err(e) => Err(e),
+                        }
+                    }
                 })
                 .collect();
 
@@ -206,7 +239,19 @@ impl<C: ContractType> GenericIndexer<C> {
         direct: Option<&Arc<crate::event_processor::DirectHandlers>>,
     ) -> Result<()> {
         let parsed = crate::events::parse_log(log, parse_type)?;
+        Self::dispatch_parsed_event(parsed, kafka, direct).await
+    }
 
+    /// Send one already-parsed event to Kafka (or the direct-handler path when
+    /// Kafka is disabled). Split out of `process_log_static` so `parse_logs`
+    /// (which may synthesize an event from more than one raw log, or emit zero
+    /// events for a log that doesn't produce one) can share the same dispatch
+    /// path as the single-log default.
+    async fn dispatch_parsed_event(
+        parsed: crate::events::ParsedEvent,
+        kafka: &KafkaProducer,
+        direct: Option<&Arc<crate::event_processor::DirectHandlers>>,
+    ) -> Result<()> {
         if let Some(handlers) = direct {
             // Kafka disabled — write preference signals directly into the rec DB.
             // Convert ParsedEvent → BlockchainEvent via JSON so the handlers can

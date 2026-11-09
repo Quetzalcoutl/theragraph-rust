@@ -11,12 +11,14 @@
 
 pub mod keys;
 mod ops;
+mod dirty;
 mod nft;
 mod user;
 mod social;
 mod signal;
 
 pub use keys::*;
+pub use dirty::rec_dirty_debounce_secs;
 pub use ops::RecCache;
 
 // =============================================================================

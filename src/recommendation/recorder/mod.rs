@@ -13,10 +13,12 @@
 //! | `decay`   | apply_preference_decay — daily maintenance pass |
 //! | `rebuild` | rebuild_user_preferences / rebuild_all_user_preferences — on-demand recovery by replaying user_interactions |
 
+mod batch;
 mod decay;
 mod rebuild;
 mod seeding;
 
+pub use batch::*;
 pub use decay::*;
 pub use rebuild::*;
 pub use seeding::*;
@@ -26,7 +28,7 @@ use sqlx::PgPool;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use super::cache::RecCache;
+use super::cache::{rec_dirty_debounce_secs, RecCache};
 use super::model::{
     apply_interaction_to_prefs, interaction_weight, EvictionPolicy, InteractionEvent,
     UserPreferences,
@@ -347,39 +349,28 @@ pub async fn record_interaction(
     // 2. Update user preferences based on interaction
     update_preferences_from_interaction(pool, &event).await?;
 
-    // 3. Invalidate Redis prefs key AND recommendation results so the next query uses fresh data,
-    //    then append a session signal so the recency boost is immediately available.
+    // 3. The cached feed is now stale. DIRTY-PLUS-DEBOUNCE (cache/dirty.rs): mark it dirty (one SET NX) and let the
+    //    next feed read purge and recompute once the mark is `rec_dirty_debounce_secs()` old, so a burst of
+    //    interactions costs one recompute instead of one per event. Without Redis (nowhere to keep the mark), or with
+    //    the debounce set to 0, purge now: the previous delete-on-every-event behaviour, both tiers together.
     let normalized_addr = event.user_address.to_lowercase();
-    if let Some(cache) = cache {
-        cache.delete_user_prefs(&normalized_addr).await;
-        cache.delete_recommendations(&normalized_addr).await;
-
-        // Only positive interactions drive the session recency boost — negative weight
-        // events (Unlike, NotInterested) should not promote tags/creators.
-        let w = interaction_weight(&event);
-        if w > 0.0 {
-            let ts_unix = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
-            let signal = super::cache::SessionSignal {
-                tags: event.nft_tags.iter().map(|s| crate::recommendation::tag_interner::intern_tag(s.as_str())).collect(),
-                creator: event.nft_creator_address.as_deref().map(|s| s.into()),
-                interaction_weight: w,
-                ts_unix,
-            };
-            cache.append_session_signal(&normalized_addr, signal).await;
+    let deferred = cache.is_some() && rec_dirty_debounce_secs() > 0;
+    if deferred {
+        if let Some(cache) = cache {
+            cache.mark_recs_dirty(&normalized_addr).await;
         }
+    } else {
+        purge_user_recommendation_caches(pool, cache, &normalized_addr).await;
     }
 
-    // 4. Invalidate SQL recommendation cache — both layers must agree or stale recs leak through
-    if let Err(e) = sqlx::query("DELETE FROM recommendation_cache WHERE user_address = $1")
-        .bind(event.user_address.to_lowercase())
-        .execute(pool)
-        .await
-    {
-        warn!("Failed to invalidate recommendation cache for {}: {}", event.user_address, e);
-        metrics::counter!("pref_cache_invalidation_failures_total").increment(1);
+    // The session-recency signal is appended at once either way, so what the person just did counts immediately.
+    // Only positive interactions drive it — negative weight events (Unlike, NotInterested) should not promote
+    // tags/creators.
+    if let Some(cache) = cache {
+        let w = interaction_weight(&event);
+        if w > 0.0 {
+            cache.append_session_signal(&normalized_addr, session_signal_of(&event, w)).await;
+        }
     }
 
     info!(
@@ -388,6 +379,39 @@ pub async fn record_interaction(
     );
 
     Ok(())
+}
+
+/// The session-recency signal an event contributes (tags, creator, weight, now).
+pub(crate) fn session_signal_of(event: &InteractionEvent, weight: f32) -> super::cache::SessionSignal {
+    let ts_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    super::cache::SessionSignal {
+        tags: event.nft_tags.iter().map(|s| crate::recommendation::tag_interner::intern_tag(s.as_str())).collect(),
+        creator: event.nft_creator_address.as_deref().map(|s| s.into()),
+        interaction_weight: weight,
+        ts_unix,
+    }
+}
+
+/// Purge a user's cached preferences and recommendation results from BOTH tiers (Redis, then the SQL
+/// `recommendation_cache` row: both must agree or stale recs leak through). Called at once by the legacy
+/// delete-on-every-event mode and, after the debounce, by the feed read that finds the dirty mark due.
+pub(crate) async fn purge_user_recommendation_caches(pool: &PgPool, cache: Option<&RecCache>, user_address: &str) {
+    let addr = user_address.to_lowercase();
+    if let Some(cache) = cache {
+        cache.delete_user_prefs(&addr).await;
+        cache.delete_recommendations(&addr).await;
+    }
+    if let Err(e) = sqlx::query("DELETE FROM recommendation_cache WHERE user_address = $1")
+        .bind(&addr)
+        .execute(pool)
+        .await
+    {
+        warn!("Failed to invalidate recommendation cache for {}: {}", user_address, e);
+        metrics::counter!("pref_cache_invalidation_failures_total").increment(1);
+    }
 }
 
 /// Returns `true` if a new row was actually inserted, `false` if it was a

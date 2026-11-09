@@ -207,6 +207,13 @@ pub struct InteractionRequest {
     pub comment_text: Option<String>,
 }
 
+/// Request body for a batch of VIEW interactions (the client sends one request per short window).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InteractionBatchRequest {
+    pub interactions: Vec<InteractionRequest>,
+}
+
 /// Response for graph-based user suggestions.
 #[derive(Debug, Serialize)]
 pub struct UserSuggestionsResponse {
@@ -477,6 +484,7 @@ pub async fn start_server(
         .route("/api/v1/crypto/eth/verify", post(eth_verify_handler))
         // Interaction tracking
         .route("/api/v1/interactions", post(interaction::record_user_interaction))
+        .route("/api/v1/interactions/batch", post(interaction::record_user_view_batch))
         // Graph-based user suggestions
         .route("/api/v1/users/suggestions/{viewer_address}/{creator_address}", get(profile::get_user_suggestions))
         // Prometheus metrics scrape endpoint

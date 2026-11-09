@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use sqlx::PgPool;
-use crate::recommendation::cache::RecCache;
+use crate::recommendation::cache::{rec_dirty_debounce_secs, RecCache};
 use crate::recommendation::graph_client::{FofBucket, GraphTraversal};
 use crate::recommendation::candidate_repository::{self as repo, CandidateNft};
 use crate::recommendation::features::NftFeatures;
@@ -231,6 +231,16 @@ pub(crate) async fn try_get_cached_free(
     feed_type: &str,
 ) -> anyhow::Result<Option<Vec<ScoredNft>>> {
     if let Some(c) = cache {
+        // Dirty-plus-debounce (cache/dirty.rs): an interaction only MARKS this person's feed dirty. The first read
+        // after the mark is `rec_dirty_debounce_secs()` old purges both cache tiers and reports a miss, so ONE
+        // recompute covers the whole burst; until then the cached feed is served. Debounce 0 = the legacy mode,
+        // where interactions purge at once and there is never a mark to look for.
+        let debounce = rec_dirty_debounce_secs();
+        if debounce > 0 && c.take_recs_dirty_if_due(user_address, debounce).await {
+            crate::recommendation::recorder::purge_user_recommendation_caches(pool, Some(c), user_address).await;
+            metrics::counter!("rec_dirty_recompute_total").increment(1);
+            return Ok(None);
+        }
         if let Some(cached) = c
             .get_recommendations::<Vec<ScoredNft>>(user_address, feed_type)
             .await
@@ -275,3 +285,52 @@ pub(crate) async fn write_to_caches_free(
         }
     }
 }
+
+#[cfg(test)]
+mod dirty_read_tests {
+    use super::*;
+    use crate::recommendation::cache::CacheKey;
+    use crate::recommendation::schema_consts::FEED_TYPE_PERSONALIZED;
+
+    // Live (runs only with DATABASE_URL and REDIS_URL, like the other database and cache tests): an interaction only
+    // marks the feed dirty; a read serves the cached feed until the mark is old enough, then purges and misses ONCE.
+    #[tokio::test]
+    async fn a_due_dirty_mark_purges_and_misses_once_while_a_fresh_one_still_serves_the_cache() {
+        let (Ok(database_url), Ok(redis_url)) = (std::env::var("DATABASE_URL"), std::env::var("REDIS_URL")) else { return };
+        if rec_dirty_debounce_secs() == 0 {
+            return; // legacy mode: interactions purge at once and there is no mark to read
+        }
+        let pool = PgPool::connect(&database_url).await.expect("connect");
+        let Some(cache) = RecCache::connect(&redis_url).await else { return };
+        let addr = format!("0xdirtyread{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
+        let marker = CacheKey::rec_dirty(&addr);
+
+        // A cached (empty) feed stands for a computed one.
+        cache.set_recommendations(&addr, FEED_TYPE_PERSONALIZED, &Vec::<ScoredNft>::new()).await;
+
+        // No mark: served from the cache.
+        let hit = try_get_cached_free(Some(&cache), &pool, &addr, FEED_TYPE_PERSONALIZED).await.unwrap();
+        assert!(hit.is_some(), "no dirty mark: the cached feed is served");
+
+        // A burst of interactions marks it dirty (the first mark wins); inside the debounce it is still served.
+        for _ in 0..5 {
+            cache.mark_recs_dirty(&addr).await;
+        }
+        let hit = try_get_cached_free(Some(&cache), &pool, &addr, FEED_TYPE_PERSONALIZED).await.unwrap();
+        assert!(hit.is_some(), "a fresh mark is inside the debounce: still served, no recompute per event");
+
+        // Age the mark past the debounce (write an old time directly), then read: ONE purge and miss.
+        let client = redis::Client::open(redis_url.as_str()).unwrap();
+        let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+        let old = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 - 600;
+        let _: () = redis::cmd("SET").arg(&marker).arg(old).arg("EX").arg(60).query_async(&mut conn).await.unwrap();
+
+        let miss = try_get_cached_free(Some(&cache), &pool, &addr, FEED_TYPE_PERSONALIZED).await.unwrap();
+        assert!(miss.is_none(), "a due mark purges both tiers and reports a miss: the feed is recomputed");
+        let gone: Option<String> = redis::cmd("GET").arg(&marker).query_async(&mut conn).await.unwrap();
+        assert!(gone.is_none(), "the mark is taken: one recompute per burst");
+        let again = try_get_cached_free(Some(&cache), &pool, &addr, FEED_TYPE_PERSONALIZED).await.unwrap();
+        assert!(again.is_none(), "the cache really was purged (and nothing re-marks it)");
+    }
+}
+

@@ -257,12 +257,30 @@ pub async fn sync_creator_affinity_to_prefs(
     creator_address: &str,
     dur_secs: u32,
 ) -> Result<()> {
-    if dur_secs < 3 {
+    let Some(delta) = creator_affinity_delta(dur_secs) else {
         return Ok(());
+    };
+    sync_creator_affinity_delta_to_prefs(pool, user_address, creator_address, delta).await
+}
+
+/// Delta one view adds to a creator's preference: max 0.15 (saturates at ~5 min), none for a view under 3 s.
+/// Accumulates across views so a user who watches 5 × 3-minute videos scores ~0.60 on that creator.
+pub fn creator_affinity_delta(dur_secs: u32) -> Option<f64> {
+    if dur_secs < 3 {
+        return None;
     }
-    // Delta per view: max 0.15 (saturates at ~5 min). Accumulates across views
-    // so a user who watches 5 × 3-minute videos scores ~0.60 on that creator.
-    let delta = 0.15_f64 * (1.0 - (-(dur_secs as f64) / 300.0).exp());
+    Some(0.15_f64 * (1.0 - (-(dur_secs as f64) / 300.0).exp()))
+}
+
+/// Apply an already-computed delta to a creator's preference (capped at 1.0). Deltas are additive and the cap is
+/// applied on the sum, so applying several views' deltas at once equals applying them one by one: the batched view
+/// path sums per creator and issues ONE statement per creator instead of one per view.
+pub async fn sync_creator_affinity_delta_to_prefs(
+    pool: &PgPool,
+    user_address: &str,
+    creator_address: &str,
+    delta: f64,
+) -> Result<()> {
     let user = user_address.to_lowercase();
     let creator = creator_address.to_lowercase();
 

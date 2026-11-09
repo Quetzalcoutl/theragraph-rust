@@ -18,6 +18,8 @@ pub const USER_PREFS_TTL: u64 = 300;          // 5 min — preferences shift slo
 pub const FOLLOWING_TTL: u64 = 300;           // 5 min — follow graph changes infrequently
 pub const SEEN_NFTS_TTL: u64 = 1800;         // 30 min — seen set for dedup
 pub const RECOMMENDATION_TTL: u64 = 600;     // 10 min — cached recommendations
+/// A dirty mark that no feed read ever collected (the person stopped using the app) expires on its own.
+pub const REC_DIRTY_TTL: u64 = 3600;         // 1h
 pub const SESSION_TTL: u64 = 7200;           // 2h — YouTube-style session recency window
 pub const STYLE_PREFS_TTL: u64 = 1800;       // 30 min — companion style_preference edges change on chat, not per-request
 /// 30 min — same rationale as STYLE_PREFS_TTL: declared genre_preference edges
@@ -53,6 +55,8 @@ const PREFIX_PREFS: &str = "rec:prefs:v2:";
 const PREFIX_FOLLOWING: &str = "rec:following:v2:";
 const PREFIX_SEEN: &str = "rec:seen:";
 const PREFIX_RECS: &str = "rec:results:v2:";
+/// Dirty-plus-debounce marker: "this person's cached recommendations are stale since <unix secs>" (see `dirty.rs`).
+const PREFIX_REC_DIRTY: &str = "rec:dirty:v1:";
 // FoF Redis key prefixes live in FofBucket::prefix() — not duplicated here.
 const PREFIX_BOARD: &str = "board:v2:";
 const PREFIX_SESSION: &str = "rec:session:v2:";
@@ -136,6 +140,12 @@ impl CacheKey {
     /// Key for cached recommendation results, scoped by feed type.
     pub fn recs(addr: &str, feed_type: &str) -> String {
         format!("{}{}:{}", PREFIX_RECS, addr.to_lowercase(), feed_type)
+    }
+
+    /// Key for the dirty marker of a user's cached recommendations: the value is the unix time of the FIRST
+    /// event since the last recompute (written once with NX), so a burst of events ages one marker.
+    pub fn rec_dirty(addr: &str) -> String {
+        format!("{}{}", PREFIX_REC_DIRTY, addr.to_lowercase())
     }
 
     /// Key for cached following-address list.

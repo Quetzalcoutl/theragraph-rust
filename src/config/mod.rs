@@ -162,6 +162,12 @@ pub struct ApiConfig {
 pub struct ContractAddresses {
     pub thera_friendz: String,
     pub thera_social: String,
+    /// v10 `TheraFriendzV2` — the contract therafriendz actually mints every
+    /// content type against today (see `therafriendz/tokens.ts`). Separate
+    /// from `thera_friendz` (v1/legacy) because its event ABI is completely
+    /// different (`ListingCreated`/`CopyPurchased`/… vs `ContentMinted`/…) —
+    /// see `indexer::thera_friendz_v2`.
+    pub thera_friendz_v2: String,
 }
 
 // ============================================================================
@@ -176,6 +182,12 @@ pub struct ContractAddresses {
 /// SignatureChecker.isValidSignatureNow, paired with a matching fix in
 /// TheraAccount.sol's isValidSignature. See therawallet/contracts/TheraFriendz.sol.
 pub const THERA_FRIENDZ: &str = "0x11d0e8f0ed3e7bbbf2fd4ca33ad9cd9aa798b0e8";
+
+/// TheraFriendzV2 (v10) contract address on Sepolia testnet — the contract the
+/// app actually mints content against (therafriendz/tokens.ts). Deployed from
+/// therawallet's `feat/v10-thera-and-therafriendz-v2` branch
+/// (`contracts/TheraFriendzV2.sol`).
+pub const THERA_FRIENDZ_V2: &str = "0x0d43e13f2b7ab58b4239a74842b2f4568b7ebd35";
 
 /// Starting block for TheraFriendz contract indexing (sepolia — 2026-09-21 redeploy)
 pub const START_BLOCK: u64 = 11748133;
@@ -278,6 +290,7 @@ impl Config {
         for (name, addr) in [
             ("THERA_FRIEND_ADDRESS", &self.contracts.thera_friendz),
             ("THERA_SOCIAL_ADDRESS", &self.contracts.thera_social),
+            ("THERA_FRIENDZ_V2_ADDRESS", &self.contracts.thera_friendz_v2),
         ] {
             if !addr.starts_with("0x") || addr.len() != 42 {
                 return Err(Error::InvalidConfig {
@@ -306,6 +319,9 @@ impl Config {
         info!("    Chain ID: {}", self.blockchain.chain_id);
         info!("    Start Block: {}", self.blockchain.start_block);
         info!("    Poll Interval: {:?}", self.blockchain.poll_interval);
+        info!("  Contracts:");
+        info!("    TheraFriendz (v1):  {}", self.contracts.thera_friendz);
+        info!("    TheraFriendzV2 (v10): {}", self.contracts.thera_friendz_v2);
         info!("  Database:");
         info!(
             "    Pool Size: {}-{}",
@@ -530,9 +546,17 @@ impl ContractAddresses {
         let social_addr =
             std::env::var("THERA_SOCIAL_ADDRESS").unwrap_or_else(|_| friends_addr.clone());
 
+        // v10 TheraFriendzV2 — same fallback-chain shape as the v1 address above,
+        // defaulting to the known Sepolia deployment (THERA_FRIENDZ_V2) rather
+        // than failing startup, matching how every other contract address here
+        // is handled.
+        let friendz_v2_addr = std::env::var("THERA_FRIENDZ_V2_ADDRESS")
+            .unwrap_or_else(|_| THERA_FRIENDZ_V2.to_string());
+
         Ok(Self {
             thera_friendz: friends_addr,
             thera_social: social_addr,
+            thera_friendz_v2: friendz_v2_addr,
         })
     }
 }

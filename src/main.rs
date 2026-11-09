@@ -234,7 +234,7 @@ async fn main() -> Result<()> {
     let mut handles = Vec::new();
 
     // Spawn blockchain indexers
-    info!("🔍 Starting blockchain indexers (friends + social)...");
+    info!("🔍 Starting blockchain indexers (friends v1 + friends v2)...");
     handles.extend(spawn_indexers(state.clone()));
     info!("✅ {} blockchain indexers started", 2);
 
@@ -354,11 +354,23 @@ fn init_tracing() {
 fn spawn_indexers(state: Arc<AppState>) -> Vec<tokio::task::JoinHandle<()>> {
     let mut handles = Vec::new();
 
-    // TheraFriendz unified contract indexer
+    // TheraFriendz v1/legacy unified contract indexer — kept running so old
+    // content (minted before the v10 cutover) stays readable.
     let social_state = state.clone();
     handles.push(tokio::spawn(async move {
         if let Err(e) = indexer::thera_friendz::run_with_state(social_state).await {
             error!("Indexer 'thera_friendz' failed: {:?}", e);
+        }
+    }));
+
+    // TheraFriendzV2 (v10) indexer — the contract the app actually mints
+    // against today. Additive: runs alongside the v1 indexer above on its own
+    // contract address and block cursor, never replacing it. See
+    // indexer::thera_friendz_v2 for the event-ABI mapping.
+    let v2_state = state.clone();
+    handles.push(tokio::spawn(async move {
+        if let Err(e) = indexer::thera_friendz_v2::run_with_state(v2_state).await {
+            error!("Indexer 'thera_friendz_v2' failed: {:?}", e);
         }
     }));
 
