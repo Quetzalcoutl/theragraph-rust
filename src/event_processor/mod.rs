@@ -24,6 +24,7 @@ pub use direct::DirectHandlers;
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::kafka::BlockchainEvent;
+use crate::token_id::TokenId;
 use crate::AppState;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
@@ -46,7 +47,8 @@ use uuid::Uuid;
 pub(super) struct EnrichmentTask {
     pub nft_uuid: Uuid,
     pub contract_address: Box<str>,
-    pub token_id: i64,
+    /// Marketplace token id (a uint256 as a canonical decimal string, ticket 037).
+    pub token_id: TokenId,
 }
 
 /// Shared NFT metadata threaded through interaction handlers.

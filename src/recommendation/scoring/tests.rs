@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::HashMap;
 use crate::recommendation::types::ContentType;
+use crate::token_id::TokenId;
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -21,7 +22,7 @@ fn make_features(
 fn make_candidate(id: &str, creator: &str, contract_type: &str) -> CandidateNft {
     CandidateNft {
         id: Some(id.to_string()),
-        token_id: Some(1),
+        token_id: Some(TokenId::from(1u64)),
         contract_address: format!("0x{id}"),
         contract_type: Some(contract_type.to_string()),
         creator_address: creator.into(),
@@ -583,13 +584,53 @@ fn score_batch_updates_seen_creators_map() {
     );
 }
 
+// ── ticket 037: marketplace ids past u64 survive scoring ─────────────────
+
+#[test]
+fn score_batch_carries_ids_past_u64_exactly_and_marks_a_draft_as_zero() {
+    let prefs = UserPreferences::default();
+    let strategy = WeightedScoring::default();
+
+    // The contract's test ids: 2^70, (7 << 64) | 3, 2^256 - 1.
+    let big = [
+        "1180591620717411303424",
+        "129127208515966861315",
+        "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+    ];
+    let mut candidates: Vec<(CandidateNft, Option<ScoringFeatures>)> = Vec::new();
+    for (i, id) in big.iter().enumerate() {
+        let mut c = make_candidate(&format!("big{i}"), &format!("0xcreator{i}"), "art");
+        c.token_id = Some(TokenId::parse(id).unwrap());
+        candidates.push((c, None));
+    }
+    // A lazy-mint draft: nfts.token_id is NULL.
+    let mut draft = make_candidate("draft", "0xcreator-draft", "art");
+    draft.token_id = None;
+    candidates.push((draft, None));
+
+    let mut seen_c = HashMap::new();
+    let mut seen_t = HashMap::new();
+    let results = score_batch(candidates, &prefs, &strategy, &mut seen_c, &mut seen_t, chrono::Utc::now().timestamp());
+
+    assert_eq!(results.len(), 4);
+    for (i, id) in big.iter().enumerate() {
+        assert_eq!(results[i].token_id.as_str(), *id);
+    }
+    assert!(results[3].token_id.is_draft());
+    assert_eq!(results[3].token_id.as_str(), "0");
+
+    // And the ScoredNft JSON carries each as a string.
+    let json = serde_json::to_value(&results[0]).unwrap();
+    assert_eq!(json["token_id"], serde_json::json!(big[0]));
+}
+
 // ── nan_safe_sort_desc ────────────────────────────────────────────────────
 
 #[test]
 fn nan_safe_sort_desc_sorts_descending() {
     let make = |id: &str, s: f32| ScoredNft {
         nft_id: id.into(),
-        token_id: 1,
+        token_id: TokenId::from(1u64),
         contract_address: "0x".into(),
         score: s,
         reason: RecommendationReason::Discovery,
@@ -610,7 +651,7 @@ fn nan_safe_sort_desc_sorts_descending() {
 fn nan_safe_sort_desc_nan_scores_sort_last() {
     let make = |id: &str, s: f32| ScoredNft {
         nft_id: id.into(),
-        token_id: 1,
+        token_id: TokenId::from(1u64),
         contract_address: "0x".into(),
         score: s,
         reason: RecommendationReason::Discovery,
@@ -670,7 +711,7 @@ fn recency_score_very_old_approaches_zero() {
 fn diversity_shuffle_returns_all_when_below_limit() {
     let make_scored = |id: &str| ScoredNft {
         nft_id: id.into(),
-        token_id: 1,
+        token_id: TokenId::from(1u64),
         contract_address: "0x".into(),
         score: 0.5,
         reason: RecommendationReason::Discovery,
@@ -689,7 +730,7 @@ fn diversity_shuffle_truncates_to_limit() {
     let types = ["snap", "art", "music", "vid"];
     let make_scored = |id: usize| ScoredNft {
         nft_id: id.to_string().into(),
-        token_id: 1,
+        token_id: TokenId::from(1u64),
         contract_address: "0x".into(),
         score: 0.5,
         reason: RecommendationReason::Discovery,

@@ -4,6 +4,7 @@
 use crate::error::{Error, Result};
 use crate::kafka::BlockchainEvent;
 use crate::recommendation::preferences::{record_interaction, InteractionEvent, InteractionType};
+use crate::token_id::TokenId;
 use tokio::sync::mpsc::error::TrySendError;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -40,14 +41,12 @@ fn wei_str_to_treez(s: &str) -> f64 {
 impl EventDispatcher {
     pub(super) async fn handle_content_minted(&self, event: &BlockchainEvent) -> Result<()> {
         if let Some(data) = &event.data {
-            let token_id_str = data.get("tokenId").and_then(|v| v.as_str()).unwrap_or("");
             let creator = data.get("creator").and_then(|v| v.as_str()).unwrap_or("");
 
-            let token_id: i64 = match data
-                .get("tokenId")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<i64>().ok())
-            {
+            // Ticket 037: the id is a uint256 as a canonical decimal string (copy ids are
+            // past i64); the one validation lives in `TokenId`. A string is the wire form;
+            // a JSON integer is still read while producers move over.
+            let token_id: TokenId = match data.get("tokenId").and_then(TokenId::from_json) {
                 Some(id) => id,
                 None => {
                     warn!("handle_content_minted: invalid or missing tokenId in event {:?}, skipping",
@@ -55,11 +54,9 @@ impl EventDispatcher {
                     return Ok(());
                 }
             };
+            let token_id_str = token_id.as_str();
 
             let nft_uuid = Self::generate_nft_uuid(&event.contract_address, token_id_str);
-
-            // token_id is already i64 (parsed at the get("tokenId") block above); no conversion needed.
-            let token_id_i64 = token_id;
 
             sqlx::query(
                 // TAG-S27-01: DO NOT overwrite tags on conflict — the enrichment worker
@@ -68,12 +65,12 @@ impl EventDispatcher {
                 // enriched tags on every Kafka redelivery.
                 "INSERT INTO nft_features \
                  (nft_id, contract_address, token_id, tags, inserted_at, updated_at) \
-                 VALUES ($1, $2, $3, $4, NOW(), NOW()) \
+                 VALUES ($1, $2, $3::numeric, $4, NOW(), NOW()) \
                  ON CONFLICT (nft_id) DO UPDATE SET updated_at = NOW()",
             )
             .bind(nft_uuid)
             .bind(&event.contract_address)
-            .bind(token_id_i64)
+            .bind(&token_id)
             .bind(Vec::<String>::new())
             .execute(&self.pool)
             .await
@@ -89,7 +86,7 @@ impl EventDispatcher {
             match self.enrichment_tx.try_send(EnrichmentTask {
                 nft_uuid,
                 contract_address: event.contract_address.as_str().into(),
-                token_id: token_id_i64,
+                token_id: token_id.clone(),
             }) {
                 Ok(()) => {},
                 Err(TrySendError::Full(_)) => {

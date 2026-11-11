@@ -27,6 +27,7 @@ use crate::recommendation::{
     preferences::UserPreferences,
     types::ContentType,
 };
+use crate::token_id::TokenId;
 
 // ── Output types ──────────────────────────────────────────────────────────────
 
@@ -34,7 +35,10 @@ use crate::recommendation::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoredNft {
     pub nft_id: Box<str>,
-    pub token_id: i64,
+    /// Marketplace token id as a canonical decimal string on the wire (the HTTP
+    /// feed, Redis and `recommendation_cache` JSON); `"0"` marks a draft that has
+    /// no on-chain token yet. Ticket 037: never an integer, never `i64`.
+    pub token_id: TokenId,
     pub contract_address: Box<str>,
     pub score: f32,
     pub reason: RecommendationReason,

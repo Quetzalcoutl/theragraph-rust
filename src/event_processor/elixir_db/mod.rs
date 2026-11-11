@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 use crate::recommendation::cache::RecCache;
 use crate::recommendation::features::{extract_features, save_features};
 use crate::recommendation::schema_consts::sanitize_genre_slug;
+use crate::token_id::TokenId;
 use sqlx::PgPool;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -39,23 +40,25 @@ impl EventDispatcher {
         contract_address: &str,
         token_id: &str,
     ) -> Result<Option<Uuid>> {
-        // POOL-002: u256 token IDs (ERC-1155, large NFT series) don't fit i64.
-        // Return Ok(None) so the caller treats the NFT as "not yet indexed" and
-        // falls through to the enrichment path, rather than propagating a permanent
-        // Error::InvalidFormat that commits the Kafka offset and loses the event.
-        let token_id_int: i64 = match token_id.parse() {
-            Ok(n) => n,
-            Err(_) => {
-                warn!("lookup_nft_uuid: token_id overflows i64, treating as not-found: {token_id:?}");
+        // Ticket 037: a marketplace id is a uint256 (copy ids are past i64), held as a
+        // validated canonical decimal and compared as numeric(78,0). An id that is
+        // not a canonical decimal can never match a row: return Ok(None) so the
+        // caller treats the NFT as "not yet indexed" and falls through to the
+        // enrichment path, rather than propagating a permanent Error::InvalidFormat
+        // that commits the Kafka offset and loses the event (the POOL-002 rule).
+        let token_id = match TokenId::parse(token_id) {
+            Ok(id) => id,
+            Err(e) => {
+                warn!("lookup_nft_uuid: not a canonical token id ({e}), treating as not-found");
                 return Ok(None);
             }
         };
 
         let result: Option<(Uuid,)> = sqlx::query_as(
-            "SELECT id FROM nfts WHERE contract_address = $1 AND token_id = $2 LIMIT 1",
+            "SELECT id FROM nfts WHERE contract_address = $1 AND token_id = $2::numeric LIMIT 1",
         )
         .bind(contract_address.to_lowercase())
-        .bind(token_id_int)
+        .bind(&token_id)
         .fetch_optional(&self.elixir_pool)
         .await
         .map_err(|e| Error::Database {
@@ -95,8 +98,9 @@ pub(crate) async fn lookup_nft_with_metadata(
     token_id_str: &str,
 ) -> crate::error::Result<Option<(Uuid, super::NftMetadata)>> {
     use crate::error::Error;
-    let token_id_int: i64 = match token_id_str.parse() {
-        Ok(n) => n,
+    // Ticket 037: validated canonical decimal uint256; anything else matches no row.
+    let token_id = match TokenId::parse(token_id_str) {
+        Ok(id) => id,
         Err(_) => return Ok(None),
     };
     // BUG-TAGS-01: this used to select a `tags` column that has never existed
@@ -106,10 +110,10 @@ pub(crate) async fn lookup_nft_with_metadata(
     let result = sqlx::query_as::<_, NftWithMetadataRow>(
         "SELECT id, contract_type::text, creator_address, genre, \
          COALESCE(genres, ARRAY[]::text[]) AS genres \
-         FROM nfts WHERE contract_address = $1 AND token_id = $2 LIMIT 1",
+         FROM nfts WHERE contract_address = $1 AND token_id = $2::numeric LIMIT 1",
     )
     .bind(contract_address.to_lowercase())
-    .bind(token_id_int)
+    .bind(&token_id)
     .fetch_optional(elixir_pool)
     .await
     .map_err(|e| Error::Database {
@@ -415,16 +419,16 @@ mod backfill_live {
         // Throwaway NFT with real genre data — nfts.id/token_id/etc. carry
         // several NOT NULL columns with no defaults, so this is the minimal
         // valid row.
-        let token_id = (Uuid::new_v4().as_u128() & 0x7FFF_FFFF_FFFF_FFFF) as i64;
+        let token_id = TokenId::from(Uuid::new_v4().as_u128() & 0x7FFF_FFFF_FFFF_FFFF);
         let (nft_id,): (Uuid,) = sqlx::query_as(
             "INSERT INTO nfts \
              (id, token_id, contract_address, contract_type, creator_address, owner_address, \
               created_at_block, inserted_at, updated_at, genre, genres) \
-             VALUES (gen_random_uuid(), $1, $2, 'art', '0xcreatorbackfilltest', '0xcreatorbackfilltest', \
+             VALUES (gen_random_uuid(), $1::numeric, $2, 'art', '0xcreatorbackfilltest', '0xcreatorbackfilltest', \
                      0, NOW(), NOW(), 'Minimalism', ARRAY['minimalism']) \
              RETURNING id",
         )
-        .bind(token_id)
+        .bind(&token_id)
         .bind(TEST_CONTRACT)
         .fetch_one(&pool)
         .await
@@ -472,5 +476,156 @@ mod backfill_live {
             .execute(&pool)
             .await
             .expect("cleanup test nft failed");
+    }
+}
+
+#[cfg(test)]
+mod token_id_live {
+    //! Hand-run proof (ticket 037) that every id query works against a REAL
+    //! `numeric(78,0)` column with ids past u64: `token_id::text` reads,
+    //! `$n::numeric` binds, and the `% 997` tie-break that replaced
+    //! `CAST(token_id AS BIGINT) % 997` (which overflows on a big id).
+    //!
+    //! Safe by construction: everything runs on ONE connection against TEMP
+    //! tables named `nfts` and `nft_features`. A temp table shadows any real table
+    //! of the same name for that session and vanishes with it, so nothing
+    //! persistent is read or written even if DATABASE_URL points at a database
+    //! that has the real tables. Point it at a scratch database anyway:
+    //!   DATABASE_URL=postgresql:///some_scratch_db \
+    //!     cargo test --bin theragraph token_id_live -- --ignored --nocapture
+    use super::*;
+    use crate::recommendation::candidate_repository::{
+        get_nfts_from_creators, list_affinity_candidates, list_candidates,
+    };
+    use crate::recommendation::features::{get_features_batch, save_features};
+    use sqlx::postgres::PgPoolOptions;
+
+    const CONTRACT: &str = "0x037037037037037037037037037037037037037a";
+    const ID_2_POW_70: &str = "1180591620717411303424";
+    const ID_COPY_7_3: &str = "129127208515966861315";
+    const ID_UINT256_MAX: &str =
+        "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+
+    async fn one_connection_pool() -> PgPool {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set (a scratch database)");
+        PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect")
+    }
+
+    async fn create_temp_tables(pool: &PgPool) {
+        sqlx::query(
+            "CREATE TEMP TABLE nfts ( \
+               id uuid PRIMARY KEY, token_id numeric(78,0), contract_address text NOT NULL, \
+               contract_type text NOT NULL DEFAULT 'art', creator_address text NOT NULL DEFAULT '0xcreator', \
+               genre text, genres text[], is_deleted boolean NOT NULL DEFAULT false, \
+               is_original boolean NOT NULL DEFAULT true, is_blocked boolean NOT NULL DEFAULT false, \
+               creation_time timestamp, inserted_at timestamp NOT NULL DEFAULT NOW())",
+        )
+        .execute(pool)
+        .await
+        .expect("temp nfts");
+        sqlx::query(
+            "CREATE TEMP TABLE nft_features ( \
+               id uuid PRIMARY KEY DEFAULT gen_random_uuid(), nft_id uuid NOT NULL UNIQUE, \
+               contract_address text NOT NULL, token_id numeric(78,0) NOT NULL, \
+               tags text[] NOT NULL DEFAULT '{}', primary_color text, style text, mood text, genre text, \
+               engagement_score real NOT NULL DEFAULT 0, trending_score real NOT NULL DEFAULT 0, \
+               quality_score real NOT NULL DEFAULT 0.5, \
+               inserted_at timestamp NOT NULL DEFAULT NOW(), updated_at timestamp NOT NULL DEFAULT NOW())",
+        )
+        .execute(pool)
+        .await
+        .expect("temp nft_features");
+    }
+
+    async fn insert_nft(pool: &PgPool, token_id: Option<&str>) -> Uuid {
+        let (id,): (Uuid,) = sqlx::query_as(
+            "INSERT INTO nfts (id, token_id, contract_address, genre, genres) \
+             VALUES (gen_random_uuid(), $1::numeric, $2, 'Minimalism', ARRAY['minimalism']) RETURNING id",
+        )
+        .bind(token_id)
+        .bind(CONTRACT)
+        .fetch_one(pool)
+        .await
+        .expect("insert nft");
+        id
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a Postgres (DATABASE_URL, a scratch database); uses TEMP tables only"]
+    async fn ids_past_u64_round_trip_through_every_id_query() {
+        let pool = one_connection_pool().await;
+        create_temp_tables(&pool).await;
+
+        // ── lookups by (contract, token id) on a numeric(78,0) column ────────
+        let mut uuids = Vec::new();
+        for id in [ID_2_POW_70, ID_COPY_7_3, ID_UINT256_MAX] {
+            let uuid = insert_nft(&pool, Some(id)).await;
+            uuids.push(uuid);
+            let found = lookup_nft_with_metadata(&pool, CONTRACT, id)
+                .await
+                .expect("lookup")
+                .unwrap_or_else(|| panic!("lookup_nft_with_metadata must find {id}"));
+            assert_eq!(found.0, uuid);
+            assert_eq!(found.1.tags, vec!["minimalism".to_string()]);
+        }
+        // A neighbouring id (what a double or an i64 would collapse onto) is a different token.
+        assert!(lookup_nft_with_metadata(&pool, CONTRACT, "1180591620717411303425")
+            .await
+            .unwrap()
+            .is_none());
+        // Refused spellings never reach SQL and never match.
+        for bad in ["", "007", "-1", "1e3", " 5", "1.0", "115792089237316195423570985008687907853269984665640564039457584007913129639936"] {
+            assert!(lookup_nft_with_metadata(&pool, CONTRACT, bad).await.unwrap().is_none(), "{bad:?}");
+        }
+        // A draft (lazy-mint listing with no on-chain token yet): token_id NULL.
+        let draft_uuid = insert_nft(&pool, None).await;
+
+        // ── feature store: write with $n::numeric, read with token_id::text ──
+        for (uuid, id) in uuids.iter().zip([ID_2_POW_70, ID_COPY_7_3, ID_UINT256_MAX]) {
+            let features = extract_features(
+                &uuid.to_string(),
+                CONTRACT,
+                TokenId::parse(id).unwrap(),
+                "art",
+                &serde_json::json!({ "tags": ["abstract"] }),
+                0.5,
+            );
+            save_features(&pool, &features).await.expect("save_features");
+            // Saving again is an upsert on nft_id, not a duplicate.
+            save_features(&pool, &features).await.expect("save_features (upsert)");
+        }
+        let rows = get_features_batch(&pool, &uuids).await.expect("get_features_batch");
+        assert_eq!(rows.len(), 3);
+        for (uuid, id) in uuids.iter().zip([ID_2_POW_70, ID_COPY_7_3, ID_UINT256_MAX]) {
+            let row = rows.iter().find(|r| r.nft_id == uuid.to_string()).expect("row");
+            assert_eq!(row.token_id.as_str(), id);
+        }
+
+        // ── candidate queries: token_id::text, and the `% 997` tie-break ─────
+        let candidates = list_candidates(&pool, None, 50, 0).await.expect("list_candidates");
+        assert_eq!(candidates.len(), 4, "3 minted + 1 draft");
+        let mut ids: Vec<Option<&str>> = candidates.iter().map(|c| c.token_id.as_ref().map(TokenId::as_str)).collect();
+        ids.sort();
+        let mut expected = vec![Some(ID_COPY_7_3), Some(ID_2_POW_70), Some(ID_UINT256_MAX), None];
+        expected.sort();
+        assert_eq!(ids, expected);
+
+        let affinity = list_affinity_candidates(&pool, &["abstract".to_string()], &[], 50)
+            .await
+            .expect("list_affinity_candidates");
+        assert_eq!(affinity.len(), 3, "the draft has no nft_features row");
+        assert!(affinity.iter().all(|c| c.token_id.is_some()));
+
+        let by_creator = get_nfts_from_creators(&pool, &["0xcreator".to_string()], 50, 0)
+            .await
+            .expect("get_nfts_from_creators");
+        assert_eq!(by_creator.len(), 4);
+        assert!(by_creator.iter().any(|c| c.id.as_deref() == Some(draft_uuid.to_string().as_str()) && c.token_id.is_none()));
+        let big: Vec<&str> = by_creator.iter().filter_map(|c| c.token_id.as_ref()).map(TokenId::as_str).collect();
+        assert!(big.contains(&ID_UINT256_MAX) && big.contains(&ID_2_POW_70) && big.contains(&ID_COPY_7_3));
     }
 }

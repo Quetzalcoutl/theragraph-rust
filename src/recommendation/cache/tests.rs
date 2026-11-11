@@ -1,5 +1,6 @@
 use super::*;
     use super::super::graph_client::FofBucket;
+    use crate::token_id::TokenId;
 
     // ── fof_bucket ───────────────────────────────────────────────────────────
 
@@ -482,7 +483,7 @@ use super::*;
         use crate::recommendation::scoring::{RecommendationReason, ScoredNft};
         let original = ScoredNft {
             nft_id: "x".into(),
-            token_id: 1,
+            token_id: TokenId::from(1u64),
             contract_address: "0x0".into(),
             score: 0.5,
             reason: RecommendationReason::Discovery,
@@ -505,7 +506,7 @@ use super::*;
         use crate::recommendation::scoring::{RecommendationReason, ScoredNft};
         let original = ScoredNft {
             nft_id: "x".into(),
-            token_id: 1,
+            token_id: TokenId::from(1u64),
             contract_address: "0x0".into(),
             score: 0.5,
             reason: RecommendationReason::Discovery,
@@ -526,9 +527,9 @@ use super::*;
         // not) — approximates what get_recommendations/set_recommendations actually
         // stores (Vec<ScoredNft>).
         use crate::recommendation::scoring::{RecommendationReason, ScoredNft};
-        let batch: Vec<ScoredNft> = (0..5).map(|i| ScoredNft {
+        let batch: Vec<ScoredNft> = (0..5u64).map(|i| ScoredNft {
             nft_id: format!("nft-{i}").into(),
-            token_id: i,
+            token_id: TokenId::from(i),
             contract_address: "0xabc".into(),
             score: i as f32 * 0.1,
             reason: RecommendationReason::Discovery,
@@ -552,7 +553,7 @@ use super::*;
 
         let original = ScoredNft {
             nft_id: "nft-abc-123".into(),
-            token_id: 42,
+            token_id: TokenId::from(42u64),
             contract_address: "0x1111111111111111111111111111111111111111".into(),
             score: 0.875_f32,
             reason: RecommendationReason::TagMatch {
@@ -580,6 +581,127 @@ use super::*;
         assert_eq!(decoded.contract_type, original.contract_type);
         assert_eq!(decoded.creator_address, original.creator_address);
         assert_eq!(decoded.tags, original.tags);
+    }
+
+    // ── ticket 037: marketplace ids are decimal strings of a uint256 ──────────
+    //
+    // The contract's test ids (.wayfinder/research/037-wire-contract.md): 2^70, a
+    // derived copy id (7 << 64) | 3, and 2^256 - 1. None fits an i64.
+
+    const ID_2_POW_70: &str = "1180591620717411303424";
+    const ID_COPY_7_3: &str = "129127208515966861315";
+    const ID_UINT256_MAX: &str =
+        "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+
+    fn scored_with_id(id: &str) -> crate::recommendation::scoring::ScoredNft {
+        use crate::recommendation::scoring::{RecommendationReason, ScoredNft};
+        ScoredNft {
+            nft_id: "nft-big".into(),
+            token_id: TokenId::parse(id).expect("contract test id"),
+            contract_address: "0xabc".into(),
+            score: 0.5,
+            reason: RecommendationReason::Discovery,
+            contract_type: "art".into(),
+            creator_address: "0xdef".into(),
+            tags: vec![].into(),
+        }
+    }
+
+    #[test]
+    fn scored_nft_carries_marketplace_ids_past_u64_as_json_strings() {
+        use crate::recommendation::scoring::ScoredNft;
+        for id in [ID_2_POW_70, ID_COPY_7_3, ID_UINT256_MAX] {
+            let original = scored_with_id(id);
+            let json = serde_json::to_value(&original).expect("serialize");
+            assert_eq!(
+                json["token_id"],
+                serde_json::Value::String(id.to_string()),
+                "the HTTP/Redis JSON must carry the id as a string, never a number"
+            );
+            let decoded: ScoredNft = serde_json::from_value(json).expect("deserialize");
+            assert_eq!(decoded.token_id.as_str(), id);
+        }
+    }
+
+    #[test]
+    fn scored_nft_carries_marketplace_ids_past_u64_through_the_reccache_wire_format() {
+        use crate::recommendation::scoring::ScoredNft;
+        let batch: Vec<ScoredNft> = [ID_2_POW_70, ID_COPY_7_3, ID_UINT256_MAX]
+            .iter()
+            .map(|id| scored_with_id(id))
+            .collect();
+        let encoded = RecCache::encode(&batch).expect("should encode");
+        let decoded: Vec<ScoredNft> = RecCache::decode(&encoded).expect("should decode");
+        let ids: Vec<&str> = decoded.iter().map(|n| n.token_id.as_str()).collect();
+        assert_eq!(ids, [ID_2_POW_70, ID_COPY_7_3, ID_UINT256_MAX]);
+    }
+
+    #[test]
+    fn scored_nft_cached_before_037_with_an_integer_id_still_decodes() {
+        // A recommendation list cached by the previous release wrote `token_id` as
+        // an integer. The cache prefix is shared with the Elixir invalidator, so it
+        // is NOT bumped; the entry has to keep decoding instead.
+        use crate::recommendation::scoring::ScoredNft;
+        #[derive(serde::Serialize)]
+        struct PreScored {
+            nft_id: &'static str,
+            token_id: i64,
+            contract_address: &'static str,
+            score: f32,
+            reason: &'static str,
+            contract_type: &'static str,
+            creator_address: &'static str,
+        }
+        let old = PreScored {
+            nft_id: "nft-old",
+            token_id: 42,
+            contract_address: "0xabc",
+            score: 0.5,
+            reason: "discovery",
+            contract_type: "art",
+            creator_address: "0xdef",
+        };
+        let json = serde_json::to_string(&old).unwrap();
+        let decoded: ScoredNft = serde_json::from_str(&json).expect("old JSON entry decodes");
+        assert_eq!(decoded.token_id.as_str(), "42");
+
+        let bytes = rmp_serde::to_vec_named(&old).unwrap();
+        let decoded: ScoredNft = RecCache::decode(&bytes).expect("old MessagePack entry decodes");
+        assert_eq!(decoded.token_id.as_str(), "42");
+        // The draft sentinel 0 (a draft had no on-chain token) keeps meaning "draft".
+        let draft = PreScored { token_id: 0, ..old };
+        let decoded: ScoredNft =
+            RecCache::decode(&rmp_serde::to_vec_named(&draft).unwrap()).expect("draft decodes");
+        assert!(decoded.token_id.is_draft());
+    }
+
+    #[test]
+    fn candidate_nft_genre_pool_round_trips_ids_past_u64_and_a_draft() {
+        use crate::recommendation::candidate_repository::CandidateNft;
+        let pool: Vec<CandidateNft> = vec![
+            CandidateNft {
+                id: Some("a".into()),
+                token_id: Some(TokenId::parse(ID_2_POW_70).unwrap()),
+                contract_address: "0xabc".into(),
+                contract_type: Some("art".into()),
+                creator_address: "0xdef".into(),
+                created_at: None,
+            },
+            CandidateNft {
+                id: Some("b".into()),
+                token_id: None, // a draft: nfts.token_id is NULL
+                contract_address: "0xabc".into(),
+                contract_type: Some("art".into()),
+                creator_address: "0xdef".into(),
+                created_at: None,
+            },
+        ];
+        let json = serde_json::to_value(&pool).unwrap();
+        assert_eq!(json[0]["token_id"], serde_json::json!(ID_2_POW_70));
+        assert!(json[1]["token_id"].is_null());
+        let decoded: Vec<CandidateNft> = RecCache::decode(&RecCache::encode(&pool).unwrap()).unwrap();
+        assert_eq!(decoded[0].token_id.as_ref().map(TokenId::as_str), Some(ID_2_POW_70));
+        assert!(decoded[1].token_id.is_none());
     }
 
     #[test]

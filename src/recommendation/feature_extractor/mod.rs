@@ -10,13 +10,16 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::tag_interner::intern_tag;
+use crate::token_id::TokenId;
 
 /// Extracted features from an NFT.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NftFeatures {
     pub nft_id: String,
     pub contract_address: String,
-    pub token_id: i64,
+    /// Marketplace token id: a canonical decimal uint256, never an integer
+    /// (ticket 037; see `crate::token_id`). Serialises as a JSON string.
+    pub token_id: TokenId,
     pub tags: Vec<String>,
     pub primary_color: Option<String>,
     pub style: Option<String>,
@@ -110,7 +113,7 @@ const COLOR_KEYWORDS: &[&str] = &[
 pub fn extract_features(
     nft_id: &str,
     contract_address: &str,
-    token_id: i64,
+    token_id: TokenId,
     contract_type: &str,
     metadata: &Value,
     creator_quality_score: f32,

@@ -1,22 +1,48 @@
 use super::*;
     use serde_json::json;
+    use crate::token_id::TokenId;
 
     fn run(metadata: serde_json::Value) -> NftFeatures {
-        extract_features("00000000-0000-0000-0000-000000000001", "0xdeadbeef", 1, "art", &metadata, 0.0)
+        extract_features("00000000-0000-0000-0000-000000000001", "0xdeadbeef", TokenId::from(1u64), "art", &metadata, 0.0)
     }
 
     #[test]
     fn output_ids_match_input() {
-        let features = extract_features("00000000-0000-0000-0000-000000000042", "0xAbCdEf", 7, "snap", &json!({}), 0.0);
+        let features = extract_features("00000000-0000-0000-0000-000000000042", "0xAbCdEf", TokenId::from(7u64), "snap", &json!({}), 0.0);
         assert_eq!(features.nft_id, "00000000-0000-0000-0000-000000000042");
-        assert_eq!(features.token_id, 7);
+        assert_eq!(features.token_id, TokenId::from(7u64));
         assert_eq!(features.contract_address, "0xabcdef");
+    }
+
+    #[test]
+    fn marketplace_ids_past_u64_pass_through_extraction_and_serialisation_exactly() {
+        // Ticket 037 test ids: 2^70, (7 << 64) | 3, 2^256 - 1.
+        for id in [
+            "1180591620717411303424",
+            "129127208515966861315",
+            "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+        ] {
+            let features = extract_features(
+                "00000000-0000-0000-0000-000000000099",
+                "0xdeadbeef",
+                TokenId::parse(id).unwrap(),
+                "music",
+                &json!({}),
+                0.5,
+            );
+            assert_eq!(features.token_id.as_str(), id);
+
+            let json = serde_json::to_value(&features).unwrap();
+            assert_eq!(json["token_id"], json!(id), "serialised as a string, never a number");
+            let back: NftFeatures = serde_json::from_value(json).unwrap();
+            assert_eq!(back.token_id.as_str(), id);
+        }
     }
 
     #[test]
     fn quality_score_from_creator() {
         let score = 0.75_f32;
-        let features = extract_features("00000000-0000-0000-0000-000000000002", "0xdeadbeef", 1, "art", &json!({}), score);
+        let features = extract_features("00000000-0000-0000-0000-000000000002", "0xdeadbeef", TokenId::from(1u64), "art", &json!({}), score);
         assert!((features.quality_score - score).abs() < f32::EPSILON);
     }
 

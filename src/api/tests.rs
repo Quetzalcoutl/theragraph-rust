@@ -4,7 +4,7 @@ use super::*;
     fn make_scored_nft(id: &str) -> ScoredNft {
         ScoredNft {
             nft_id: id.into(),
-            token_id: 1,
+            token_id: crate::token_id::TokenId::from(1u64),
             contract_address: "0xdeadbeef".into(),
             score: 0.9,
             reason: RecommendationReason::Discovery,

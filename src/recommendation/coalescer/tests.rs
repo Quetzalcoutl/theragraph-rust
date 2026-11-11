@@ -6,7 +6,7 @@
     fn nft(score: f32) -> ScoredNft {
         ScoredNft {
             nft_id: "test".into(),
-            token_id: 0,
+            token_id: crate::token_id::TokenId::draft(),
             contract_address: "0x0".into(),
             score,
             reason: RecommendationReason::Discovery,

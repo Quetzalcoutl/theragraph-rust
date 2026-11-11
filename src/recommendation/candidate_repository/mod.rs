@@ -16,6 +16,7 @@ use super::cache::RecCache;
 use super::features::{NftFeatures, ScoringFeatures};
 use super::scoring::ScoredNft;
 use super::types::ContentType;
+use crate::token_id::TokenId;
 
 use serde_json;
 
@@ -25,7 +26,7 @@ use serde_json;
 // `set_genre_pool`) — a plain data struct, adding derives changes nothing
 // about its DB-row semantics.
 //
-// `token_id` is `Option<i64>` because `nfts.token_id` itself IS nullable in
+// `token_id` is `Option<TokenId>` because `nfts.token_id` itself IS nullable in
 // Postgres — lazy-mint economy: a freshly-posted, not-yet-purchased draft has
 // no on-chain token yet. Fixed 2026-09-14: this used to be `token_id: i64`
 // with every query below filtering `token_id IS NOT NULL`, on the reasoning
@@ -35,15 +36,22 @@ use serde_json;
 // in order to trigger its first mint. That filter meant NO freshly-created
 // content, of any kind, could ever appear in feed/recommendations — a
 // complete, silent breakage of "give it its first buy." Downstream consumers
-// (`ScoredNft.token_id: i64`, `NftFeatures.token_id: i64`) convert this back
-// to a plain `i64` via `.unwrap_or(0)` — `0` is the same "draft, not yet
-// minted" sentinel the frontend's `isDraftNft(tokenId)` already uses
-// everywhere (TheraFriendz.sol's `_nextTokenId` pre-increments from 0, so a
-// real on-chain token id is never 0) — no API/wire contract change needed.
+// (`ScoredNft.token_id`, `NftFeatures.token_id`) convert this back to a plain
+// `TokenId` via `TokenId::draft()` ("0") — the same "draft, not yet minted"
+// sentinel the frontend's `isDraftNft(tokenId)` already uses everywhere
+// (TheraFriendz.sol's `_nextTokenId` pre-increments from 0, so a real on-chain
+// token id is never 0) — no API/wire sentinel change needed.
+//
+// Ticket 037: the id is a uint256 (the v3 market's copy ids are past i64), so
+// it is held as a validated canonical decimal string. Every SELECT below reads
+// it as `token_id::text AS token_id` (the column is numeric(78,0)); never
+// select the raw column into this struct — TokenId refuses a numeric/bigint.
+// Cached copies of this struct (the genre-pool entries in Redis) written before
+// 037 carry the id as an integer; `TokenId` still deserialises that.
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
 pub struct CandidateNft {
     pub id: Option<String>,
-    pub token_id: Option<i64>,
+    pub token_id: Option<TokenId>,
     pub contract_address: String,
     pub contract_type: Option<String>,
     pub creator_address: String,
@@ -77,14 +85,14 @@ pub async fn list_candidates(
     // Using a single query with a nullable bind avoids duplicating 7 SQL lines.
     Ok(sqlx::query_as::<_, CandidateNft>(
         r#"
-        SELECT id::text, token_id, contract_address, contract_type::text,
+        SELECT id::text, token_id::text AS token_id, contract_address, contract_type::text,
                LOWER(creator_address) AS creator_address,
                COALESCE(creation_time, inserted_at)::text as created_at
         FROM nfts
         WHERE is_deleted = false AND is_original = true AND is_blocked = false
           AND ($1::text IS NULL OR contract_type::text = $1)
           AND COALESCE(creation_time, inserted_at) > NOW() - INTERVAL '30 days'
-        ORDER BY COALESCE(creation_time, inserted_at) DESC, CAST(token_id AS BIGINT) % 997
+        ORDER BY COALESCE(creation_time, inserted_at) DESC, nfts.token_id % 997
         LIMIT $2 OFFSET $3
         "#,
     )
@@ -170,9 +178,9 @@ pub async fn load_features(
                 // In practice this branch only runs when a `nft_features` row
                 // already exists for this NFT, which only happens once it's
                 // been through feature extraction (post-mint) — token_id is
-                // expected to always be Some(_) here. unwrap_or(0) is a type-
+                // expected to always be Some(_) here. TokenId::draft() is a type-
                 // level safety net using the same draft sentinel as ScoredNft.
-                token_id:         nft.token_id.unwrap_or(0),
+                token_id:         nft.token_id.clone().unwrap_or_else(TokenId::draft),
                 tags:             sf.tags.iter().map(|s| s.to_string()).collect(),
                 primary_color:    None,
                 style:            None,
@@ -219,7 +227,7 @@ pub async fn list_affinity_candidates(
     // special-casing beyond the early-return above.
     Ok(sqlx::query_as::<_, CandidateNft>(
         r#"
-        SELECT n.id::text, n.token_id, n.contract_address, n.contract_type::text,
+        SELECT n.id::text, n.token_id::text AS token_id, n.contract_address, n.contract_type::text,
                LOWER(n.creator_address) AS creator_address,
                COALESCE(n.creation_time, n.inserted_at)::text as created_at
         FROM nfts n
@@ -555,7 +563,7 @@ pub async fn get_nfts_from_creators(
 
     Ok(sqlx::query_as::<_, CandidateNft>(
         r#"
-        SELECT id::text, token_id, contract_address, contract_type::text,
+        SELECT id::text, token_id::text AS token_id, contract_address, contract_type::text,
                LOWER(creator_address) AS creator_address,
                COALESCE(creation_time, inserted_at)::text as created_at
         FROM nfts

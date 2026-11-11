@@ -10,6 +10,7 @@ use crate::recommendation::{
 };
 
 use super::{RecommendationReason, ScoredNft, ScoringContext, ScoringStrategy, ScoringWeights};
+use crate::token_id::TokenId;
 
 // ── Free scoring helpers ──────────────────────────────────────────────────────
 
@@ -424,10 +425,10 @@ pub(crate) fn score_batch(
             Some(id) => id,
             None => continue,
         };
-        // Draft (not-yet-minted) content has no on-chain token_id yet — 0 is
+        // Draft (not-yet-minted) content has no on-chain token_id yet — "0" is
         // the same sentinel the frontend's isDraftNft(tokenId) already uses
         // (a real minted token_id is never 0).
-        let token_id = token_id.unwrap_or(0);
+        let token_id = token_id.unwrap_or_else(TokenId::draft);
         let contract_type = contract_type.unwrap_or_default();
         let created_at    = created_at.as_deref().unwrap_or("");
 

@@ -288,16 +288,16 @@ mod live {
     /// UUID with no backing row fails the insert. Mint a minimal throwaway
     /// NFT first and return its id.
     async fn seed_nft(pool: &PgPool) -> Uuid {
-        let token_id = (Uuid::new_v4().as_u128() & 0x7FFF_FFFF_FFFF_FFFF) as i64;
+        let token_id = crate::token_id::TokenId::from(Uuid::new_v4().as_u128() & 0x7FFF_FFFF_FFFF_FFFF);
         let (id,): (Uuid,) = sqlx::query_as(
             "INSERT INTO nfts \
              (id, token_id, contract_address, contract_type, creator_address, owner_address, \
               created_at_block, inserted_at, updated_at) \
-             VALUES (gen_random_uuid(), $1, $2, 'music', '0xcreatorlivetest', '0xcreatorlivetest', \
+             VALUES (gen_random_uuid(), $1::numeric, $2, 'music', '0xcreatorlivetest', '0xcreatorlivetest', \
                      0, NOW(), NOW()) \
              RETURNING id",
         )
-        .bind(token_id)
+        .bind(&token_id)
         .bind(LIVE_TEST_CONTRACT)
         .fetch_one(pool)
         .await

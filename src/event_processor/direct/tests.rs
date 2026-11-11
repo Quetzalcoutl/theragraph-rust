@@ -70,36 +70,6 @@
         assert_eq!(classify_event_type("CONTENTLIKED"), None); // case-sensitive
     }
 
-    // ── parse_token_id ──────────────────────────────────────────────────────
-
-    #[test]
-    fn parse_token_id_valid_numbers() {
-        assert_eq!(parse_token_id("0"), Some(0));
-        assert_eq!(parse_token_id("1"), Some(1));
-        assert_eq!(parse_token_id("42"), Some(42));
-        assert_eq!(parse_token_id("9223372036854775807"), Some(i64::MAX));
-    }
-
-    #[test]
-    fn parse_token_id_negative() {
-        // Negative token IDs are technically valid i64 parses
-        assert_eq!(parse_token_id("-1"), Some(-1));
-    }
-
-    #[test]
-    fn parse_token_id_non_numeric_returns_none() {
-        assert_eq!(parse_token_id(""), None);
-        assert_eq!(parse_token_id("abc"), None);
-        assert_eq!(parse_token_id("1.5"), None);
-        assert_eq!(parse_token_id("0x1a"), None); // hex not supported
-    }
-
-    #[test]
-    fn parse_token_id_overflow_returns_none() {
-        // u128::MAX does not fit in i64
-        assert_eq!(parse_token_id("99999999999999999999999"), None);
-    }
-
     // ── normalise_address ───────────────────────────────────────────────────
 
     #[test]

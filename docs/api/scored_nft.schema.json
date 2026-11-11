@@ -12,9 +12,9 @@
       "description": "Postgres UUID of the NFT row in the `nfts` table."
     },
     "token_id": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "On-chain token ID. Zero is valid (some contracts start at 0)."
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,77})$",
+      "description": "Marketplace token ID as a canonical decimal string of a uint256 (at most 2^256 - 1): no sign, no leading zeros, no exponent. A string because v3 copy ids, (originalId << 64) | serial, are far past a 64-bit integer and a JavaScript number. \"0\" marks a draft (a listing with no on-chain token yet). Older cached responses may still carry a small integer; consumers must accept a string and never parse the id into a number."
     },
     "contract_address": {
       "type": "string",

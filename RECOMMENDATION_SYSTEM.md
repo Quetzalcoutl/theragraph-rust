@@ -137,7 +137,7 @@ CREATE TABLE nft_features (
     id UUID PRIMARY KEY,
     nft_id UUID UNIQUE NOT NULL REFERENCES nfts(id),
     contract_address TEXT NOT NULL,
-    token_id BIGINT NOT NULL,
+    token_id NUMERIC(78,0) NOT NULL,  -- a uint256 (migration 018); read as token_id::text, write as $n::numeric
     tags TEXT[] DEFAULT '{}',
     primary_color TEXT,
     style TEXT,

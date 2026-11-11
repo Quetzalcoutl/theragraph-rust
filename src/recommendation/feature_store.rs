@@ -9,6 +9,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use super::feature_extractor::NftFeatures;
+use crate::token_id::TokenId;
 
 // ── Private DB row ────────────────────────────────────────────────────────────
 
@@ -16,7 +17,9 @@ use super::feature_extractor::NftFeatures;
 struct FeaturesRow {
     nft_id: Uuid,
     contract_address: String,
-    token_id: i64,
+    // Selected as `token_id::text` and decoded through TokenId's validation:
+    // the column is numeric(78,0) (bigint before migration 018), never an i64.
+    token_id: TokenId,
     tags: Option<Vec<String>>,
     primary_color: Option<String>,
     style: Option<String>,
@@ -57,7 +60,7 @@ pub async fn save_features(pool: &PgPool, features: &NftFeatures) -> Result<()> 
              style, mood, genre, engagement_score, trending_score, quality_score,
              inserted_at, updated_at)
         VALUES
-            (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+            (gen_random_uuid(), $1, $2, $3::numeric, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
         ON CONFLICT (nft_id) DO UPDATE SET
             tags = $4,
             primary_color = $5,
@@ -72,7 +75,7 @@ pub async fn save_features(pool: &PgPool, features: &NftFeatures) -> Result<()> 
     )
     .bind(nft_uuid)
     .bind(&features.contract_address)
-    .bind(features.token_id)
+    .bind(&features.token_id)
     .bind(&features.tags)
     .bind(&features.primary_color)
     .bind(&features.style)
@@ -97,7 +100,7 @@ pub async fn get_features_batch(pool: &PgPool, nft_ids: &[Uuid]) -> Result<Vec<N
 
     let rows: Vec<FeaturesRow> = sqlx::query_as::<_, FeaturesRow>(
         r#"
-        SELECT nft_id, contract_address, token_id, tags, primary_color,
+        SELECT nft_id, contract_address, token_id::text AS token_id, tags, primary_color,
                style, mood, genre,
                engagement_score::real, trending_score::real, quality_score::real
         FROM nft_features

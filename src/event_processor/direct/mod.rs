@@ -415,13 +415,6 @@ pub(crate) fn classify_event_type(event_type: &str) -> Option<&'static str> {
     }
 }
 
-/// Parse a token-id string to `i64`.  Returns `None` for non-numeric or u256 input,
-/// mirroring the early-return in `lookup_nft_with_metadata`.
-#[allow(dead_code)]
-pub(crate) fn parse_token_id(s: &str) -> Option<i64> {
-    s.parse::<i64>().ok()
-}
-
 /// Normalise a blockchain address for storage: lowercase, empty-string guard.
 /// Returns `None` when the input is blank (or only whitespace after trim).
 #[allow(dead_code)]
