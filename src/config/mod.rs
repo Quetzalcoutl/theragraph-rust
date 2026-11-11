@@ -197,7 +197,7 @@ pub const THERA_FRIENDZ: &str = "0x11d0e8f0ed3e7bbbf2fd4ca33ad9cd9aa798b0e8";
 /// `THERA_FRIENDZ_V2_ADDRESS` in the environment still wins over this default.
 /// A fresh cursor starts at `START_BLOCK`; set `START_BLOCK=12106924` to begin
 /// at the deployment instead of replaying older blocks.
-pub const THERA_FRIENDZ_V2: &str = "0x84dc0dacade17a179aaed5f7c2ddc08936a6214b";
+pub const THERA_FRIENDZ_V2: &str = "0x054d1880a9ca9dbc4005289ce0ac76fcab2ed7f1";
 
 /// Starting block for TheraFriendz contract indexing (sepolia — 2026-09-21 redeploy)
 pub const START_BLOCK: u64 = 11748133;
