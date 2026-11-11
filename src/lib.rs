@@ -9,6 +9,7 @@ pub mod config;
 pub mod database;
 pub mod error;
 pub mod crypto;
+pub mod token_id;
 #[cfg(feature = "nif")]
 pub mod nif;
 

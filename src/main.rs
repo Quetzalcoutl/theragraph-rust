@@ -36,6 +36,7 @@ mod indexer;
 mod kafka;
 mod recommendation;
 mod state;
+mod token_id;
 
 pub use state::AppState;
 
