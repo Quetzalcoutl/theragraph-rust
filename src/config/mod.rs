@@ -187,7 +187,17 @@ pub const THERA_FRIENDZ: &str = "0x11d0e8f0ed3e7bbbf2fd4ca33ad9cd9aa798b0e8";
 /// app actually mints content against (therafriendz/tokens.ts). Deployed from
 /// therawallet's `feat/v10-thera-and-therafriendz-v2` branch
 /// (`contracts/TheraFriendzV2.sol`).
-pub const THERA_FRIENDZ_V2: &str = "0x0d43e13f2b7ab58b4239a74842b2f4568b7ebd35";
+///
+/// 2026-11-11: now the v3 market (`TheraFriendzV3`, same event ABI as V2),
+/// deployed at Sepolia block 12106924. It mints copy ids
+/// `(originalId << 64) | serial`, which is why ticket 037 made every marketplace
+/// id a decimal string (`crate::token_id`). The previous default was
+/// `0x0d43e13f2b7ab58b4239a74842b2f4568b7ebd35` (the old v10 market; its real
+/// transactions are still the fixtures in `indexer/thera_friendz_v2/tests.rs`).
+/// `THERA_FRIENDZ_V2_ADDRESS` in the environment still wins over this default.
+/// A fresh cursor starts at `START_BLOCK`; set `START_BLOCK=12106924` to begin
+/// at the deployment instead of replaying older blocks.
+pub const THERA_FRIENDZ_V2: &str = "0x84dc0dacade17a179aaed5f7c2ddc08936a6214b";
 
 /// Starting block for TheraFriendz contract indexing (sepolia — 2026-09-21 redeploy)
 pub const START_BLOCK: u64 = 11748133;
