@@ -222,6 +222,85 @@ fn test_decode_copy_purchased_maps_recipient_not_payer() {
     }
 }
 
+// Ticket 037: the v3 market mints copy ids `(originalId << 64) | serial`. Test ids from the
+// wire contract: original 7 / serial 3 = 129127208515966861315, 2^70, and 2^256 - 1.
+#[test]
+fn test_decode_copy_purchased_with_a_v3_copy_id_past_u64() {
+    use crate::token_id::TokenId;
+    let payer = addr(0x11);
+    let recipient = addr(0x22);
+    let copy_id = (U256::from(7u8) << 64usize) | U256::from(3u8);
+    let log = v2_log(
+        vec![
+            V2_TOPICS.copy_purchased,
+            B256::from(U256::from(7u8).to_be_bytes::<32>()), // originalId
+            B256::from(copy_id.to_be_bytes::<32>()),         // copyId
+            addr_topic(payer),
+        ],
+        encode_copy_purchased_data(recipient),
+        200,
+        2,
+        0x03,
+    );
+
+    let event = decode_copy_purchased(&log).expect("decode failed");
+    match &event.data {
+        Some(ParsedEventData::CopyMintedV2 { original_id, new_token_id, .. }) => {
+            assert_eq!(original_id, "7");
+            assert_eq!(new_token_id, "129127208515966861315");
+            assert_eq!(TokenId::parse(new_token_id).unwrap().as_str(), "129127208515966861315");
+        }
+        other => panic!("expected CopyMintedV2, got {other:?}"),
+    }
+    assert_eq!(event.indexed_params[2], "129127208515966861315");
+    let json = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["data"]["new_token_id"], serde_json::json!("129127208515966861315"));
+}
+
+#[test]
+fn test_mint_correlation_keeps_an_original_id_of_2_pow_70_and_the_uint256_maximum() {
+    use crate::token_id::TokenId;
+    let creator = addr(0xAA);
+    for (id, expected) in [
+        (U256::from(1u8) << 70usize, "1180591620717411303424"),
+        (
+            U256::MAX,
+            "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+        ),
+    ] {
+        let topic = B256::from(id.to_be_bytes::<32>());
+        let listing_log = v2_log(
+            vec![V2_TOPICS.listing_created, topic, addr_topic(creator)],
+            encode_listing_created_data(1_000, 5),
+            100,
+            0,
+            0x07,
+        );
+        let metadata_log = v2_log(
+            vec![V2_TOPICS.content_metadata, topic],
+            encode_content_metadata_data(2, "ipfs://example"),
+            100,
+            1,
+            0x07,
+        );
+        let results = parse_v2_logs(&[listing_log, metadata_log]);
+        assert_eq!(results.len(), 2);
+        match &results[0].as_ref().unwrap().data {
+            Some(ParsedEventData::MintedV2 { token_id, .. }) => {
+                assert_eq!(token_id, expected);
+                assert!(TokenId::parse(token_id).is_ok());
+            }
+            other => panic!("expected MintedV2, got {other:?}"),
+        }
+        match &results[1].as_ref().unwrap().data {
+            Some(ParsedEventData::ListingUpdatedV2 { original_token_id, .. }) => {
+                assert_eq!(original_token_id, expected);
+            }
+            other => panic!("expected ListingUpdatedV2, got {other:?}"),
+        }
+    }
+}
+
 #[test]
 fn test_decode_content_moderated_blocked_true_emits_content_blocked() {
     let log = v2_log(

@@ -101,6 +101,35 @@ use super::*;
         }
     }
 
+    // ── ticket 037: an event carrying a marketplace id past u64 ─────────────
+    // The v3 market's copy ids are (originalId << 64) | serial. An event whose
+    // tokenId is 2^70 must be read exactly, and a bare JSON number that big (a
+    // producer that rounded it through a double) must be refused, not truncated.
+
+    #[test]
+    fn content_minted_event_with_a_2_pow_70_id_is_read_exactly() {
+        use crate::kafka::BlockchainEvent;
+        use crate::token_id::TokenId;
+        let raw = r#"{"event_type":"ContentMinted","contract_address":"0xabc","contract_type":"music","block_number":10,"transaction_hash":"0xaa","log_index":0,"timestamp":1,"data":{"tokenId":"1180591620717411303424","creator":"0xdef","price":"100"}}"#;
+        let event: BlockchainEvent = serde_json::from_str(raw).unwrap();
+        let data = event.data.as_ref().expect("data");
+        let id = data.get("tokenId").and_then(TokenId::from_json).expect("2^70 id");
+        assert_eq!(id.as_str(), "1180591620717411303424");
+
+        // The deterministic nft uuid is keyed by the whole decimal string: the
+        // neighbouring id must not collide (a double or an i64 would collapse them).
+        let neighbour = TokenId::parse("1180591620717411303425").unwrap();
+        assert_ne!(
+            EventDispatcher::generate_nft_uuid("0xabc", id.as_str()),
+            EventDispatcher::generate_nft_uuid("0xabc", neighbour.as_str()),
+        );
+
+        // The same id as a bare JSON number is already rounded: refused.
+        let rounded = raw.replace("\"1180591620717411303424\"", "1180591620717411303424");
+        let event: BlockchainEvent = serde_json::from_str(&rounded).unwrap();
+        assert!(event.data.unwrap().get("tokenId").and_then(TokenId::from_json).is_none());
+    }
+
     // ── generate_nft_uuid (deterministic v5 UUID) ───────────────────────────
     // generate_nft_uuid lives on EventProcessor (in elixir_db.rs) and is
     // pub(super). We mirror the algorithm here to verify the contract that

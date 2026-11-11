@@ -90,6 +90,76 @@ fn test_parse_content_minted_event() {
     } else { panic!("Expected Minted data"); }
 }
 
+// Ticket 037: v3 copy ids are (originalId << 64) | serial, far past u64. The topic is a
+// full 32-byte word, so the decoder must keep every digit and emit a canonical decimal.
+// The contract's test ids: 2^70, (7 << 64) | 3, 2^256 - 1.
+const ID_2_POW_70: &str = "1180591620717411303424";
+const ID_COPY_7_3: &str = "129127208515966861315";
+const ID_UINT256_MAX: &str =
+    "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+
+fn uint256_topic(n: U256) -> B256 {
+    B256::from(n.to_be_bytes::<32>())
+}
+
+#[test]
+fn test_parse_content_minted_event_with_ids_past_u64_keeps_every_digit() {
+    use crate::token_id::TokenId;
+    let sig = b256_from_hex("0xe913bf0f321ec4538e6e03894963538ad29d5bc7610699f655b8d4be77ef3c31");
+    let creator_topic = b256_from_hex("0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let content_type_topic = b256_from_hex("0x0000000000000000000000000000000000000000000000000000000000000003");
+    let mut data_vec = vec![0u8; 64];
+    data_vec[0..32].copy_from_slice(&U256::from(100u64).to_be_bytes::<32>());
+    data_vec[32..64].copy_from_slice(&U256::from(1_700_000_500u64).to_be_bytes::<32>());
+
+    let ids = [
+        (U256::from(1u8) << 70usize, ID_2_POW_70),
+        ((U256::from(7u8) << 64usize) | U256::from(3u8), ID_COPY_7_3),
+        (U256::MAX, ID_UINT256_MAX),
+    ];
+    for (id, expected) in ids {
+        let log = test_log(
+            vec![sig, uint256_topic(id), creator_topic, content_type_topic],
+            Bytes::from(data_vec.clone()),
+        );
+        let parsed = parse_log(&log, "friends").expect("parse failed");
+        assert_eq!(parsed.indexed_params[0], expected);
+        match &parsed.data {
+            Some(ParsedEventData::Minted { token_id, .. }) => {
+                assert_eq!(token_id, expected);
+                // The decoder's output is exactly what the validator accepts.
+                assert_eq!(TokenId::parse(token_id).unwrap().as_str(), expected);
+            }
+            other => panic!("Expected Minted data, got {other:?}"),
+        }
+        // The Kafka JSON carries the id as a string, never a number.
+        let json = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(json["data"]["token_id"], serde_json::json!(expected));
+    }
+}
+
+#[test]
+fn test_parse_listing_updated_event_with_an_id_past_u64() {
+    let sig = b256_from_hex("0x249b4fd7f31ce1b27cdf920c73f8526880c641036b50f96dc78f49d5166f5853");
+    let encoded = DynSolValue::Tuple(vec![
+        DynSolValue::Uint(U256::from(500u64), 256),
+        DynSolValue::Uint(U256::from(10u64), 256),
+        DynSolValue::Uint(U256::from(1_700_000_500u64), 256),
+    ]).abi_encode_sequence().unwrap();
+    let log = test_log(
+        vec![sig, uint256_topic(U256::from(1u8) << 70usize)],
+        Bytes::from(encoded),
+    );
+    let parsed = parse_log(&log, "friends").expect("parse failed");
+    assert_eq!(parsed.indexed_params, vec![ID_2_POW_70.to_string()]);
+    match parsed.data {
+        Some(ParsedEventData::ListingUpdated { original_token_id, .. }) => {
+            assert_eq!(original_token_id, ID_2_POW_70);
+        }
+        other => panic!("Expected ListingUpdated data, got {other:?}"),
+    }
+}
+
 #[test]
 fn test_parse_platform_fee_updated_event() {
     let sig = b256_from_hex("0x5ad51d3c935f3f73f5b949c8702f6798df012b7f415aa33e82a6c81c6c9ff6a0");

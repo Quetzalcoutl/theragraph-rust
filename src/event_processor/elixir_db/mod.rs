@@ -491,8 +491,9 @@ mod token_id_live {
     //! of the same name for that session and vanishes with it, so nothing
     //! persistent is read or written even if DATABASE_URL points at a database
     //! that has the real tables. Point it at a scratch database anyway:
-    //!   DATABASE_URL=postgresql:///some_scratch_db \
+    //!   DATABASE_URL=postgresql://<user>@localhost/<scratch_db> \
     //!     cargo test --bin theragraph token_id_live -- --ignored --nocapture
+    //! (the URL needs a user: without one sqlx connects as "anonymous".)
     use super::*;
     use crate::recommendation::candidate_repository::{
         get_nfts_from_creators, list_affinity_candidates, list_candidates,
